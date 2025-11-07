@@ -1,0 +1,254 @@
+/* --- 1. BACKGROUND STYLE --- */
+html,body {
+    height: 100%; 
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    margin: 0;
+    
+    /* --- SFONDO AGGIORNATO CON IMMAGINE PESCI --- */
+    background-image: url('fishes.jpg');
+    background-repeat: repeat;
+    
+    
+    background-size: 300px; 
+    
+    /* Aggiunto un colore di fallback nel caso l'immagine non carichi */
+    background-color: #f0f8ff; 
+    
+    color: #333;
+    overflow: hidden; /* Niente scroll! */
+}
+
+/* --- 2. HEADER STYLE --- */
+header {
+    background: linear-gradient(135deg, #004a99 0%, #007bff 100%);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px; 
+    padding: 0 20px;
+    text-align: center;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.25);
+    z-index: 1000;
+    height: 60px;
+    box-sizing: border-box;
+}
+
+.container {
+    display: grid;
+    grid-template-areas: "controls dashboard";
+    grid-template-columns: 350px 1fr; 
+    gap: 15px;
+    padding: 15px;
+    height: calc(100% - 60px); 
+    box-sizing: border-box;
+}
+
+#controls-container {
+    grid-area: controls;
+    display: flex;
+    flex-direction: column; 
+    gap: 15px;
+    height: 100%;
+    overflow-y: auto; 
+}
+
+/* --- WIDGET MOD: Opacity increased for readability --- */
+#controls, #details {
+    background: rgba(255, 255, 255, 0.9); /* 90% opacity */
+    backdrop-filter: blur(3px);           /* Frosted glass effect */
+    padding: 18px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3); 
+}
+
+#dashboard {
+    grid-area: dashboard;
+    display: flex; 
+    flex-direction: column;
+    gap: 15px;
+    height: 100%; 
+    overflow: hidden; 
+}
+
+#map {
+    width: 100%;
+    height: 50%; 
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#bottom-widgets {
+    display: grid;
+    grid-template-columns: 1.5fr 1fr;
+    gap: 15px;
+    height: 50%;
+    min-height: 250px; 
+}
+
+/* --- WIDGET MOD: Opacity increased for readability --- */
+#force-graph-container, #timeline-chart-container {
+    width: 100%;
+    height: 100%; 
+    background: rgba(255, 255, 255, 0.9); /* 90% opacity */
+    backdrop-filter: blur(3px);           /* Frosted glass effect */
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    box-sizing: border-box; 
+    position: relative;
+    padding: 10px;
+    padding-top: 40px; 
+    overflow: hidden; 
+}
+
+#force-graph-container h3, #timeline-chart-container h3 {
+    position: absolute; 
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    margin: 0;
+    font-size: 1.1em;
+    color: #333;
+    white-space: nowrap;
+}
+
+/*  */
+#force-graph-container svg, #timeline-chart-container svg {
+    width: 100%;
+    height: 100%;
+}
+
+/* Stili per i controlli */
+#controls label {
+    display: block;
+    font-weight: 500;
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+#controls input[type="text"],
+#controls select,
+#controls input[type="date"],
+#controls input[type="number"] {
+    display: block;
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box; 
+}
+
+#controls button {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    background-color: #007bff;
+    cursor: pointer;
+    font-weight: 600;
+}
+#controls button:hover {
+    background-color: #0056b3;
+}
+#controls button#reset-button {
+    background-color: #6c757d;
+}
+#controls button#reset-button:hover {
+    background-color: #5a6268;
+}
+
+/* Stile per il pannello Dettagli */
+#info-box {
+    color: #555;
+}
+#info-box h4 {
+    margin-bottom: 5px;
+    color: #004a99;
+}
+#info-box p {
+    margin-top: 0;
+    margin-bottom: 15px;
+}
+#info-box ul {
+    padding-left: 20px;
+    font-size: 0.9em;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Stile per il Tooltip (usato da entrambi i grafici) */
+.tooltip {
+    position: absolute;
+    text-align: center;
+    padding: 6px;
+    font: 12px sans-serif;
+    background: #333;
+    color: white;
+    border: 0px;
+    border-radius: 4px;
+    pointer-events: none; 
+    z-index: 2000;
+}
+
+/* --- STILI FORCE GRAPH --- */
+.force-graph-link {
+    transition: stroke-opacity 0.3s ease, stroke 0.3s ease;
+}
+
+.force-graph-node path {
+    stroke: #fff;
+    stroke-width: 1.5px;
+    cursor: grab;
+    transition: opacity 0.3s ease;
+}
+
+.force-graph-text {
+    font-size: 10px;
+    font-weight: 500;
+    fill: #333;
+    pointer-events: none; 
+    text-anchor: middle;
+    dy: -14; 
+    transition: opacity 0.3s ease;
+}
+
+/* --- 3. STILE PER LOGO E TITOLO --- */
+.logo-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.logo-container img {
+    height: 40px; 
+    width: auto;  
+    filter: invert(1); 
+    mix-blend-mode: lighten; 
+}
+
+/* ★★★ REGOLA DEL TITOLO AGGIORNATA ★★★ */
+header h1 {
+    margin: 0;
+    
+    /* Modifiche per stile accattivante */
+    font-family: 'Titillium Web', sans-serif;  /* Nuovo font */
+    font-size: 1.8em;                           /* Leggermente più grande */
+    font-weight: 700;                           /* Più grassetto */
+    text-transform: uppercase;                  /* Stile "titolone" */
+    letter-spacing: 1px;                        /* Più spaziatura tra le lettere */
+    
+    /* Ombra più definita e un leggero bagliore bianco per farlo risaltare */
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 
+                 0 0 5px rgba(255, 255, 255, 0.15); 
+}
+
+
+/* --- 4. REGOLA PER NASCONDERE IL BRUSH (per la timeline) --- */
+#timeline-chart-container .brush .selection {
+    fill: none;
+    stroke: none;
+}
