@@ -1,983 +1,905 @@
-// --- Helper: Debounce ---
-function debounce(func, wait, immediate) {
-    let timeout;
-    return function() {
-        const context = this, args = arguments;
-        const later = function() {
-            timeout = null;
-            if (!immediate) func.apply(context, args);
-        };
-        const callNow = immediate && !timeout;
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-        if (callNow) func.apply(context, args);
-    };
-};
+(() => {
+  "use strict";
 
-// --- Main script entry ---
-document.addEventListener('DOMContentLoaded', () => {
+  const BASE = Date.UTC(2035, 0, 1);
+  const DAY = 1440;
+  const GAP_MIN = 12 * 60;
+  const SSE = "SouthSeafood Express Corp";
+  const fromISO = (s) => (Date.parse(`${s}T00:00:00Z`) - BASE) / 60000;
+  const toDate = (min) => new Date(BASE + min * 60000);
+  const fromDate = (d) => (d.getTime() - BASE) / 60000;
+  const PERIOD = [fromISO("2035-02-01"), fromISO("2035-12-01") - 1];
 
-    // --- 1. Map Initialization (Leaflet) ---
-    const map = L.map('map').setView([0, 0], 5);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(map);
-    const vesselTracksLayer = L.layerGroup().addTo(map);
-    const geographyLayer = L.layerGroup().addTo(map);
+  const fmtInt = d3.format(",");
+  const fmtH = (minutes) => `${fmtInt(Math.round(minutes / 60))} h`;
+  const isoDay = d3.utcFormat("%Y-%m-%d");
+  const fmtDay = d3.utcFormat("%-d %b %Y");
+  const fmtShort = d3.utcFormat("%-d %b");
+  const KIND_LABEL = { preserve: "Ecological preserve", fishing: "Fishing ground", island: "Island", city: "Port city", buoy: "Navigation buoy", other: "Area" };
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-    // Map Legend
-    const legend = L.control({position: 'bottomright'});
-    legend.onAdd = function (map) {
-        const div = L.DomUtil.create('div', 'info legend');
-        div.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
-        div.style.padding = '10px';
-        div.style.borderRadius = '5px';
-        div.style.border = '1px solid #ccc';
-        div.style.lineHeight = '1.5';
+  const state = { company: -1, vessel: -1, zone: -1, view: "rank", topN: 10, range: null, metric: "preserve" };
+  let D, L, V, COMP, P, SSE_IDX, isPreserve, preserveIdx, companyVessels, fleet, stats, geo;
 
-        div.innerHTML = '<h4>Track legend</h4>' +
-            '<i style="background: #dc3545; width: 18px; height: 3px; display: inline-block; margin-right: 5px; vertical-align: middle; opacity: 0.8;"></i> SouthSeafood Exp.<br>' +
-            '<i style="background: #FFA500; width: 18px; height: 3px; display: inline-block; margin-right: 5px; vertical-align: middle; opacity: 0.8;"></i> Other suspect<br>' +
-            '<i style="background: #222222; border-top: 3px dashed #222; width: 18px; height: 0px; display: inline-block; margin-right: 5px; vertical-align: middle; opacity: 0.7;"></i> Gap Transponder';
-        return div;
-    };
-    legend.addTo(map);
+  const $ = (sel) => document.querySelector(sel);
+  const app = $("#app");
+  const tooltip = $("#tooltip");
 
-    const tooltip = d3.select("#tooltip"); 
+  function h(tag, attrs = {}, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k === "style") el.style.cssText = v;
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  }
 
-    // --- 2. Data Loading (D3.js) ---
-    Promise.all([
-        d3.json('mc2.json'), 
-        d3.json('Oceanus Information/Oceanus Geography.geojson'),
-        d3.json('Oceanus Information/Oceanus Geography Nodes.json')
-    ]).then(([data, geography, locationNodes]) => {
-        
-        console.log("✅ DATA LOADED SUCCESSFULLY.");
+  function showTip(event, html) {
+    tooltip.innerHTML = html;
+    tooltip.hidden = false;
+    const pad = 14;
+    const { width, height } = tooltip.getBoundingClientRect();
+    let x = event.clientX + pad;
+    let y = event.clientY + pad;
+    if (x + width > window.innerWidth - 8) x = event.clientX - width - pad;
+    if (y + height > window.innerHeight - 8) y = event.clientY - height - pad;
+    tooltip.style.transform = `translate(${Math.max(8, x)}px, ${Math.max(8, y)}px)`;
+  }
+  const hideTip = () => { tooltip.hidden = true; };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-        let brushedDateRange = null; 
-        let chartBrush = null; 
-        let timelineSvg = null;
-        let timelineXScale = null;
-        let timelineHeight = null;
-        
-        const NOME_TIPO_TRACCIA = "Event.TransportEvent.TransponderPing";
-        const NOME_PROPRIETA_DATA_LINK = 'time';
-        const NOME_PROPRIETA_COMPAGNIA = 'company';
-
-        const graphNodes = data.nodes;
-        const edges = data.links;
-        
-        const vessels = graphNodes.filter(n => n.type && n.type.startsWith("Entity.Vessel"));
-        const cargoReports = graphNodes.filter(n => n.type && n.type.startsWith("Entity.Document"));
-        const transactionLinks = edges.filter(e => e.type === "Event.Transaction");
-
-        // --- Data Prep: Forbidden Zones ---
-        const allZoneKinds = [...new Set(geography.features
-            .filter(f => f.properties && f.properties["*Kind"])
-            .map(f => f.properties["*Kind"]))];
-        console.log("TIPI DI ZONE DISPONIBILI:", allZoneKinds);
-
-        const SUSPICIOUS_KINDS = ["Ecological Preserve"]; 
-        const forbiddenZones = geography.features.filter(f => 
-            f.properties && f.properties["*Kind"] && SUSPICIOUS_KINDS.includes(f.properties["*Kind"])
-        );
-        console.log(`Found ${forbiddenZones.length} forbidden zones matching criteria.`);
-        
-        // --- Data Prep: Timeline Data ---
-        const dateParser = d3.timeParse("%Y-%m-%d");
-        const allPortExitData = transactionLinks.map(link => {
-            const cargoNode = cargoReports.find(c => c.id === link.source);
-            const quantity = cargoNode ? parseFloat(cargoNode.qty_tons) : 0;
-            return {
-                date: dateParser(link.date),
-                quantity: isNaN(quantity) ? 0 : quantity,
-            };
-        }).filter(d => d.date);
-
-        // --- 3. Visualization Logic (Geography) ---
-        const geoJSONLayer = L.geoJson(geography, {
-            style: (feature) => {
-                if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-                    let regionColor = "#006400";
-                    if (feature.properties && SUSPICIOUS_KINDS.includes(feature.properties["*Kind"])) {
-                        regionColor = "#8B0000"; 
-                    }
-                    return { color: regionColor, weight: 1, fillOpacity: 0.3 };
-                }
-                return {};
-            },
-            pointToLayer: (feature, latlng) => {
-                return L.marker(latlng)
-                        .on('mouseover', function (e) {
-                            this.setIcon(L.icon({ 
-                                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-                                iconSize: [40, 60], 
-                                iconAnchor: [20, 60]
-                            }));
-                        })
-                        .on('mouseout', function (e) {
-                            this.setIcon(L.icon({
-                                iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-                                iconSize: [25, 41],
-                                iconAnchor: [12, 41]
-                            }));
-                        });
-            },
-            onEachFeature: function (feature, layer) {
-                if (feature.properties && feature.properties.Name) {
-                    layer.bindTooltip(feature.properties.Name); 
-                }
-                if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
-                    layer.on({
-                        mouseover: (e) => { 
-                            e.target.setStyle({
-                                weight: 4, 
-                                fillOpacity: 0.6 
-                            });
-                        },
-                        mouseout: (e) => {
-                            geoJSONLayer.resetStyle(e.target); 
-                        },
-                        click: (e) => {
-                            const clickedZoneFeature = e.target.feature;
-                            const zoneName = clickedZoneFeature.properties.Name || "Unknown Zone";
-                            const isForbidden = SUSPICIOUS_KINDS.includes(clickedZoneFeature.properties["*Kind"]);
-
-                            if (!isForbidden) return;
-
-                            const infoBox = d3.select("#info-box");
-                            infoBox.html(""); 
-                            infoBox.append("h4").text("Selected Zone:");
-                            infoBox.append("p").text(zoneName);
-
-                            infoBox.append("h4").text("Available Fish Species:");
-                            
-                            let fishSpecies = [];
-                            
-                            switch (zoneName) {
-                                case "Ghoti Preserve":
-                                    fishSpecies = ["Wrasse", "Beauvoir", "Helenaa", "Offidiaa"];
-                                    break;
-                                case "Nemo Reef":
-                                    fishSpecies = ["Wrasse", "Tuna", "Birdseye", "Beauvoir", "Helenaa"];
-                                    break;
-                                case "Don Limpet Preserve":
-                                    fishSpecies = ["Tuna", "Birdseye", "Beauvoir", "Helenaa", "Sockfish"];
-                                    break;
-                                default:
-                                    fishSpecies = [];
-                                    break;
-                            }
-                            
-                            if (fishSpecies.length > 0) {
-                                const fishList = infoBox.append("ul");
-                                fishSpecies.forEach(fish => {
-                                    fishList.append("li").text(fish); 
-                                });
-                            } else {
-                                infoBox.append("p").text("No specific fish data available for this zone.");
-                            }
-
-                            let pingsInThisZone = [];
-                            
-                            let relevantEdges = edges.filter(e => e.type === NOME_TIPO_TRACCIA);
-                            if (brushedDateRange) {
-                                relevantEdges = relevantEdges.filter(e => {
-                                    const edgeDate = new Date(e[NOME_PROPRIETA_DATA_LINK]);
-                                    return edgeDate >= brushedDateRange[0] && edgeDate <= brushedDateRange[1];
-                                });
-                            }
-
-                            relevantEdges.forEach(edge => {
-                                const locationMetadata = locationNodes.nodes.find(loc => loc.id === edge.source);
-                                if (!locationMetadata) return;
-                                const locationFeature = geography.features.find(f => f.properties.Name === locationMetadata.Name && f.geometry.type === 'Point'); 
-                                if (!locationFeature) return;
-                                
-                                const coords = locationFeature.geometry.coordinates;
-                                const geoPoint = [coords[0], coords[1]];
-
-                                if (d3.geoContains(clickedZoneFeature.geometry, geoPoint)) {
-                                    const vesselNode = vessels.find(v => v.id === edge.target);
-                                    const companyName = vesselNode ? vesselNode[NOME_PROPRIETA_COMPAGNIA] : "Unknown";
-                                    const vesselName = vesselNode ? vesselNode.name : "Unknown";
-
-                                    pingsInThisZone.push({
-                                        date: new Date(edge[NOME_PROPRIETA_DATA_LINK]),
-                                        company: companyName,
-                                        vessel: vesselName
-                                    });
-                                }
-                            });
-                            
-                            infoBox.append("h4").text("Vessels Logged in this Zone:");
-                            
-                            pingsInThisZone.sort((a,b) => a.date - b.date);
-
-                            if (pingsInThisZone.length > 0) {
-                                infoBox.append("p").text(`Found ${pingsInThisZone.length} pings in this zone.`);
-
-                                const pingsByCompany = d3.group(pingsInThisZone, d => d.company);
-                                
-                                const sortedCompanies = Array.from(pingsByCompany.entries());
-                                sortedCompanies.sort((a, b) => b[1].length - a[1].length);
-                                
-                                const list = infoBox.append("ul");
-
-                                sortedCompanies.forEach(([company, pings]) => {
-                                    const companyLi = list.append("li").style("margin-top", "5px");
-                                    companyLi.append("strong").text(`${company || "Unknown"} (${pings.length} pings)`);
-                                    
-                                    const vesselsInvolved = [...new Set(pings.map(p => p.vessel))];
-                                    const vesselUl = companyLi.append("ul").style("font-size", "0.9em");
-                                    vesselsInvolved.forEach(vessel => {
-                                        vesselUl.append("li").text(vessel);
-                                    });
-                                });
-
-                            } else {
-                                infoBox.append("p").text("No pings recorded in this zone (for the selected date range).");
-                            }
-                        }
-                    });
-                }
-            }
-        }).addTo(geographyLayer);
-        map.fitBounds(geoJSONLayer.getBounds());
-        
-        // --- 4. Interactivity (Function Definitions) ---
-
-        // Populates the company filter dropdown
-        function populateFilter(vessels) {
-            const select = d3.select("#vessel-filter");
-            if (!vessels || vessels.length === 0) return;
-            const companies = [...new Set(vessels.map(v => v[NOME_PROPRIETA_COMPAGNIA]).filter(c => c))];
-            const southSeafood = "SouthSeafood Express Corp";
-            const otherCompanies = companies.filter(c => c !== southSeafood).sort((a, b) => a.localeCompare(b)); 
-            const sortedCompanies = [southSeafood, ...otherCompanies];
-            select.selectAll("option.dynamic").remove();
-            select.selectAll("option.dynamic")
-                .data(sortedCompanies)
-                .enter().append("option")
-                .attr("class", "dynamic") 
-                .attr("value", d => d)
-                .text(d => d);
-        }
-        
-        // Updates the 'Selected Details' panel
-        function updateDetailsPanel(entity, suspiciousPingsList = []) {
-            const infoBox = d3.select("#info-box");
-            infoBox.html(""); 
-            
-            const isVessel = entity.name && entity.name.indexOf("All ") !== 0; 
-            
-            infoBox.append("h4").text(isVessel ? "Selected Vessel:" : "Selected Company:");
-            infoBox.append("p").text(entity.name || "Unknown Name");
-            
-            if (isVessel) {
-                infoBox.append("h4").text("Company:");
-                infoBox.append("p").text(entity[NOME_PROPRIETA_COMPAGNIA] || "Unknown");
-            }
-            
-            infoBox.append("h4").text("Suspicious Pings Logged (in Zones):");
-            
-            suspiciousPingsList.sort((a,b) => a.date - b.date);
-
-            if (suspiciousPingsList.length > 0) {
-                infoBox.append("p").text(`Found ${suspiciousPingsList.length} pings in forbidden zones.`);
-                const list = infoBox.append("ul");
-                suspiciousPingsList.forEach(ping => {
-                    list.append("li").text(`Date: ${ping.date.toLocaleString('en-US')} | Zone: ${ping.zone}`);
-                });
-            } else {
-                infoBox.append("p").text("No pings in forbidden zones logged.");
-            }
-             infoBox.append("p").style("margin-top", "10px").style("font-style", "italic")
-                .text("Note: Transponder gaps (dashed lines on map) are also considered suspicious behavior.");
-        }
-        
-        // Calculates suspicious ping data for graphs
-        function calculateSuspicionData(filterCompany = 'all', dateRange = null) {
-            let relevantEdges = edges.filter(e => e.type === NOME_TIPO_TRACCIA);
-            if (dateRange) {
-                relevantEdges = relevantEdges.filter(e => {
-                    const edgeDate = new Date(e[NOME_PROPRIETA_DATA_LINK]);
-                    return edgeDate >= dateRange[0] && edgeDate <= dateRange[1];
-                });
-            }
-            const companyTotals = new Map(); 
-            const zoneTotals = new Map(); 
-            const flows = new Map(); 
-            const vesselsToScan = (filterCompany === 'all') ? vessels : vessels.filter(v => v[NOME_PROPRIETA_COMPAGNIA] === filterCompany);
-            
-            vesselsToScan.forEach(vessel => {
-                const companyName = vessel[NOME_PROPRIETA_COMPAGNIA];
-                if (!companyName) return; 
-                const vesselEdges = relevantEdges.filter(e => e.target === vessel.id);
-                
-                vesselEdges.forEach(edge => {
-                    const locationMetadata = locationNodes.nodes.find(loc => loc.id === edge.source);
-                    if (!locationMetadata) return;
-                    const locationFeature = geography.features.find(f => f.properties.Name === locationMetadata.Name && f.geometry.type === 'Point'); 
-                    if (!locationFeature) return;
-                    const coords = locationFeature.geometry.coordinates;
-                    const geoPoint = [coords[0], coords[1]];
-                    
-                    for (const zone of forbiddenZones) {
-                        if (d3.geoContains(zone.geometry, geoPoint)) {
-                            const zoneName = "Forbidden zone"; 
-                            
-                            companyTotals.set(companyName, (companyTotals.get(companyName) || 0) + 1);
-                            zoneTotals.set(zoneName, (zoneTotals.get(zoneName) || 0) + 1);
-                            
-                            const key = `${companyName}|${zoneName}`;
-                            flows.set(key, (flows.get(key) || 0) + 1);
-                            
-                            break; 
-                        }
-                    }
-                });
-            });
-            const sortedCompanyTotals = Array.from(companyTotals.entries()).sort((a, b) => b[1] - a[1]);
-            return { sortedCompanyTotals, zoneTotals, flows };
-        }
-        
-        // Draws the force-directed graph (suspicion network)
-        function drawForceGraph(suspicionData, filterCompany = 'all') {
-            const chartContainer = d3.select("#force-graph-container");
-            chartContainer.html(""); 
-            
-            const topN = d3.select("#top-n-input").property("valueAsNumber");
-            chartContainer.append("h3").attr("id", "force-graph-title").text(`Suspicious Activity Network (Top ${topN})`);
-            if(filterCompany !== 'all') {
-                chartContainer.select("h3").text(`Activity Network: ${filterCompany}`);
-            }
-
-            let topCompanies;
-            if (filterCompany !== 'all') {
-                topCompanies = suspicionData.sortedCompanyTotals.filter(d => d[0] === filterCompany);
-            } else {
-                topCompanies = suspicionData.sortedCompanyTotals.slice(0, topN); 
-                const sse = "SouthSeafood Express Corp";
-                if (!topCompanies.find(d => d[0] === sse) && suspicionData.sortedCompanyTotals.find(d => d[0] === sse)) {
-                    topCompanies.push(suspicionData.sortedCompanyTotals.find(d => d[0] === sse));
-                }
-            }
-            const topCompanyNames = new Set(topCompanies.map(d => d[0]));
-            
-            const nodeMap = new Map();
-            suspicionData.flows.forEach((value, key) => {
-                const [companyName, zoneName] = key.split('|');
-                if (topCompanyNames.has(companyName)) {
-                    if (!nodeMap.has(companyName)) nodeMap.set(companyName, { id: companyName, type: 'company' });
-                    if (!nodeMap.has(zoneName)) nodeMap.set(zoneName, { id: zoneName, type: 'zone' });
-                }
-            });
-
-            const graph = {
-                nodes: Array.from(nodeMap.values()),
-                links: Array.from(suspicionData.flows, ([key, value]) => {
-                    const [source, target] = key.split('|');
-                    return { source: source, target: target, value: value };
-                }).filter(l => topCompanyNames.has(l.source)) 
-            };
-            
-            const margin = {top: 10, right: 10, bottom: 10, left: 10};
-            
-            const containerNode = chartContainer.node();
-            const containerHeight = containerNode.clientHeight;
-            const containerWidth = containerNode.clientWidth;
-
-            const height = Math.max(containerHeight - 40, 150); 
-            const width = Math.max(containerWidth, 150);
-            
-            const svg = chartContainer.append("svg")
-                .attr("viewBox", `0 0 ${width} ${height}`)
-                .attr("preserveAspectRatio", "xMidYMid meet")
-              .append("g");
-            
-            if (graph.nodes.length === 0) {
-                 svg.append("text").text("No suspicious pings for this selection.").attr("x", width/2).attr("y", height/2).style("fill", "#666").style("text-anchor", "middle");
-                return;
-            }
-            
-            const color = (d) => {
-                if (d.id === 'SouthSeafood Express Corp') return '#dc3545';
-                if (d.type === 'company') return '#FFA500';
-                return '#6c757d';
-            };
-
-            const allCompanyPings = suspicionData.sortedCompanyTotals.map(d => d[1]);
-            const allZonePings = Array.from(suspicionData.zoneTotals.values());
-            const maxPings = d3.max([...allCompanyPings, ...allZonePings]) || 1;
-
-            const nodeRadiusScale = d3.scaleSqrt()
-                .domain([1, maxPings])
-                .range([6, 25]); 
-
-            // Helper: Get node radius based on ping count
-            function getNodeRadius(d) {
-                let pings = 1;
-                if (d.type === 'company') {
-                    const companyData = suspicionData.sortedCompanyTotals.find(c => c[0] === d.id);
-                    pings = companyData ? companyData[1] : 1;
-                } else { // 'zone'
-                    pings = suspicionData.zoneTotals.get(d.id) || 1;
-                }
-                return nodeRadiusScale(pings);
-            }
-
-            const linkOpacityScale = d3.scaleSqrt()
-                .domain([1, d3.max(graph.links, d => d.value) || 1])
-                .range([0.2, 0.9]);
-
-            const simulation = d3.forceSimulation(graph.nodes)
-                .force("link", d3.forceLink(graph.links).id(d => d.id).distance(150))
-                .force("charge", d3.forceManyBody().strength(-800))
-                .force("collide", d3.forceCollide().radius(d => getNodeRadius(d) + 3)) 
-                .force("center", d3.forceCenter(width / 2, height / 2)); 
-
-            const linkedByIndex = {};
-            graph.links.forEach(d => {
-                linkedByIndex[`${d.source.id},${d.target.id}`] = 1;
-            });
-
-            // Helper: Check if two nodes are linked
-            function isConnected(a, b) {
-                return linkedByIndex[`${a.id},${b.id}`] || linkedByIndex[`${b.id},${a.id}`] || a.id === b.id;
-            }
-            
-            // Helper: Fade graph elements for hover
-            function fadeOut() {
-                node.style("opacity", 0.1);
-                text.style("opacity", 0.1);
-                link.style("stroke-opacity", 0.05);
-            }
-            
-            // Helper: Reset graph opacity after hover
-            function resetOpacity() {
-                node.style("opacity", 1);
-                text.style("opacity", 1);
-                link.style("stroke-opacity", d => linkOpacityScale(d.value)) 
-                    .style("stroke", d => d.source.id === 'SouthSeafood Express Corp' ? '#dc3545' : '#969696'); 
-            }
-            
-            const link = svg.append("g")
-                .selectAll("line")
-                .data(graph.links)
-                .enter().append("line")
-                .attr("class", "force-graph-link")
-                .attr("stroke", d => (d.source.id === 'SouthSeafood Express Corp') ? '#dc3545' : '#969696')
-                .attr("stroke-width", 2) 
-                .attr("stroke-opacity", d => linkOpacityScale(d.value)) 
-                .style("cursor", "pointer")
-                .on("click", (event, d) => {
-                    d3.select("#vessel-filter").property("value", d.source.id);
-                    updateDashboard(false);
-                })
-                .on("mouseover", (event, d) => {
-                    tooltip.transition().duration(200).style("opacity", .9);
-                    tooltip.html(`<b>Flow:</b> ${d.source.id} → ${d.target.id}<br><b>Pings:</b> ${d.value}`)
-                        .style("left", (event.pageX + 10) + "px")
-                        .style("top", (event.pageY - 28) + "px");
-                })
-                .on("mousemove", (event) => {
-                    tooltip.style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 28) + "px");
-                })
-                .on("mouseout", () => {
-                    tooltip.transition().duration(500).style("opacity", 0);
-                });
-
-            const symbolGenerator = d3.symbol()
-                .type(d3.symbolCircle)
-                .size(d => Math.PI * Math.pow(getNodeRadius(d), 2)); 
-
-            const node = svg.append("g")
-                .selectAll("path") 
-                .data(graph.nodes)
-                .enter().append("path") 
-                .attr("class", "force-graph-node")
-                .attr("d", symbolGenerator) 
-                .attr("fill", color)
-                .call(drag(simulation))
-                .on("click", (event, d) => {
-                    if (d.type === 'company') {
-                        d3.select("#vessel-filter").property("value", d.id);
-                        updateDashboard(false);
-                    }
-                })
-                .on("mouseover", (event, d) => {
-                    tooltip.transition().duration(200).style("opacity", .9);
-
-                    let tooltipHtml = "";
-                    if (d.type === 'company') {
-                        const totalPingsEntry = suspicionData.sortedCompanyTotals.find(c => c[0] === d.id);
-                        const totalPings = totalPingsEntry ? totalPingsEntry[1] : 0;
-                        tooltipHtml = `<b>Company</b><br>${d.id}<br><b>Total Pings: ${totalPings}</b>`;
-
-                    } else {
-                        tooltipHtml = `<b>Zone</b><br>${d.id}<br><b>Total Pings:</b> ${suspicionData.zoneTotals.get(d.id)}`;
-                    }
-
-                    tooltip.html(tooltipHtml)
-                        .style("left", (event.pageX + 10) + "px")
-                        .style("top", (event.pageY - 28) + "px");
-                        
-                    fadeOut();
-                    
-                    node.filter(n => isConnected(d, n))
-                        .style("opacity", 1);
-                        
-                    text.filter(t => isConnected(d, t))
-                        .style("opacity", 1);
-                        
-                    link.filter(l => l.source.id === d.id || l.target.id === d.id)
-                        .style("stroke-opacity", 0.9)
-                        .style("stroke", l => l.source.id === 'SouthSeafood Express Corp' ? '#dc3545' : '#FFA500');
-                })
-                .on("mousemove", (event) => {
-                    tooltip.style("left", (event.pageX + 10) + "px").style("top", (event.pageY - 28) + "px");
-                })
-                .on("mouseout", () => {
-                    tooltip.transition().duration(500).style("opacity", 0);
-                    resetOpacity();
-                });
-
-            const text = svg.append("g")
-                .selectAll("text")
-                .data(graph.nodes)
-                .enter().append("text")
-                .attr("class", "force-graph-text")
-                .attr("text-anchor", "middle")
-                .attr("dy", d => `-${getNodeRadius(d) + 5}px`) 
-                .text(d => d.id);
-            
-            simulation.on("tick", () => {
-                graph.nodes.forEach(d => {
-                    d.x = Math.max(10, Math.min(width - 10, d.x));
-                    d.y = Math.max(10, Math.min(height - 10, d.y));
-                });
-                
-                link
-                    .attr("x1", d => d.source.x)
-                    .attr("y1", d => d.source.y)
-                    .attr("x2", d => d.target.x)
-                    .attr("y2", d => d.target.y);
-                node
-                    .attr("transform", d => `translate(${d.x},${d.y})`);
-                text
-                    .attr("x", d => d.x)
-                    .attr("y", d => d.y);
-            });
-
-            // Enables drag behavior for graph nodes
-            function drag(simulation) {
-                function dragstarted(event, d) {
-                    if (!event.active) simulation.alphaTarget(0.3).restart();
-                    d.fx = d.x;
-                    d.fy = d.y;
-                }
-                function dragged(event, d) {
-                    d.fx = event.x;
-                    d.fy = event.y;
-                }
-                function dragended(event, d) {
-                    if (!event.active) simulation.alphaTarget(0);
-                }
-                return d3.drag()
-                    .on("start", dragstarted)
-                    .on("drag", dragged)
-                    .on("end", dragended);
-            }
-        }
-        
-        // Draws the timeline area chart
-        function drawTimelineChart(filterCompany = 'all') {
-            const chartContainer = d3.select("#timeline-chart-container");
-            chartContainer.html(""); 
-            let dataForChart, yAxisLabel, title, titleColor;
-            if (filterCompany === 'all') {
-                title = "Total Cargo Over Time (All Companies)";
-                yAxisLabel = "Total Cargo Quantity (Tons)";
-                titleColor = "#007bff";
-                const dailyData = d3.group(allPortExitData, d => d3.timeDay.floor(d.date));
-                dataForChart = Array.from(dailyData, ([date, values]) => ({ date: date, value: d3.sum(values, d => d.quantity) }));
-            } else {
-                title = `Suspicious Pings: ${filterCompany}`;
-                yAxisLabel = "Number of Suspicious Pings";
-                titleColor = (filterCompany === 'SouthSeafood Express Corp') ? '#dc3545' : '#FFA500';
-                let suspiciousPings = [];
-                const companyVessels = vessels.filter(v => v[NOME_PROPRIETA_COMPAGNIA] === filterCompany);
-                companyVessels.forEach(vessel => {
-                    const vesselEdges = edges.filter(e => e.target === vessel.id && e.type === NOME_TIPO_TRACCIA);
-                    vesselEdges.forEach(edge => {
-                        const locationMetadata = locationNodes.nodes.find(loc => loc.id === edge.source);
-                        if (!locationMetadata) return;
-                        const locationFeature = geography.features.find(f => f.properties.Name === locationMetadata.Name && f.geometry.type === 'Point'); 
-                        if (!locationFeature) return;
-                        const coords = locationFeature.geometry.coordinates;
-                        const geoPoint = [coords[0], coords[1]];
-                        for (const zone of forbiddenZones) {
-                            if (d3.geoContains(zone.geometry, geoPoint)) {
-                                suspiciousPings.push({ date: new Date(edge[NOME_PROPRIETA_DATA_LINK]) });
-                                break; 
-                            }
-                        }
-                    });
-                });
-                const dailyData = d3.group(suspiciousPings, d => d3.timeDay.floor(d.date));
-                dataForChart = Array.from(dailyData, ([date, values]) => ({ date: date, value: values.length }));
-            }
-            chartContainer.append("h3").text(title);
-            dataForChart.sort((a, b) => a.date - b.date); 
-            const margin = {top: 10, right: 30, bottom: 30, left: 60};
-            const containerNode = chartContainer.node();
-            const containerHeight = containerNode.clientHeight;
-            const containerWidth = containerNode.clientWidth;
-            const height = Math.max(containerHeight - 40 - margin.top - margin.bottom, 100); 
-            const width = Math.max(containerWidth - margin.left - margin.right, 100);
-            const svg = chartContainer.append("svg").attr("viewBox", `0 0 ${containerWidth} ${containerHeight}`).append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-            timelineSvg = svg; 
-            if (dataForChart.length === 0) {
-                 svg.append("text").text("No data for this period.").attr("x", width/2).attr("y", height/2).style("fill", "#666").style("text-anchor", "middle");
-                return;
-            }
-            const xScale = d3.scaleTime().domain(d3.extent(dataForChart, d => d.date)).range([0, width]);
-            const yScale = d3.scaleLinear().domain([0, d3.max(dataForChart, d => d.value) || 1]).range([height, 0]);
-            timelineXScale = xScale;
-            timelineHeight = height;
-            svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(xScale).ticks(5).tickFormat(d3.timeFormat("%Y-%m")));
-            svg.append("g").call(d3.axisLeft(yScale).ticks(5));
-            svg.append("text").attr("transform", "rotate(-90)").attr("y", 0 - margin.left + 15).attr("x", 0 - (height / 2)).attr("dy", "1em").style("text-anchor", "middle").style("font-size", "12px").text(yAxisLabel);
-            const areaGenerator = d3.area().x(d => xScale(d.date)).y0(height).y1(d => yScale(d.value));
-            svg.append("path").datum(dataForChart).attr("fill", titleColor).attr("fill-opacity", 0.7).attr("stroke", d3.rgb(titleColor).darker(1)).attr("stroke-width", 1.5).attr("d", areaGenerator);
-            const highlightGroup = svg.append("g").attr("class", "date-range-highlight");
-            
-            // Handles timeline brush (date selection) event
-            function onBrushEnd(event) {
-                const selection = event.selection;
-                if (selection) {
-                    brushedDateRange = [ xScale.invert(selection[0]), xScale.invert(selection[1]) ];
-
-                    const toLocalISODate = (date) => {
-                        const year = date.getFullYear();
-                        const month = (date.getMonth() + 1).toString().padStart(2, '0');
-                        const day = date.getDate().toString().padStart(2, '0');
-                        return `${year}-${month}-${day}`;
-                    };
-
-                    d3.select("#start-date").property("value", toLocalISODate(brushedDateRange[0]));
-                    d3.select("#end-date").property("value", toLocalISODate(brushedDateRange[1]));
-
-                } else {
-                    brushedDateRange = null; 
-                    d3.select("#start-date").property("value", "");
-                    d3.select("#end-date").property("value", "");
-                }
-                if (event.sourceEvent) {
-                    updateDashboard(false); 
-                }
-                updateDateRangeHighlight();
-            }
-            chartBrush = d3.brushX().extent([[0, 0], [width, height]]).on("end", onBrushEnd); 
-            svg.append("g").attr("class", "brush").call(chartBrush);
-            updateDateRangeHighlight();
-            const bisector = d3.bisector(d => d.date).left;
-            const focus = svg.append("g").attr("class", "focus").style("display", "none");
-            focus.append("line").attr("class", "focus-line").attr("y1", 0).attr("y2", height).attr("stroke", "#666").attr("stroke-width", 1).attr("stroke-dasharray", "3,3");
-            focus.append("circle").attr("r", 5).attr("fill", "white").attr("stroke", "black").attr("stroke-width", 1.5);
-            svg.append("rect").attr("width", width).attr("height", height).style("fill", "none").style("pointer-events", "all")
-                .on("mouseout", () => { focus.style("display", "none"); tooltip.style("opacity", 0); })
-                .on("mouseover", () => { focus.style("display", null); tooltip.style("opacity", .9); })
-                .on("mousemove", (event) => {
-                    const x0 = xScale.invert(d3.pointer(event)[0]); 
-                    const i = bisector(dataForChart, x0, 1); 
-                    const d0 = dataForChart[i - 1];
-                    const d1 = dataForChart[i];
-                    const d = (d1 && (d0 ? (x0 - d0.date > d1.date - x0) : true)) ? d1 : d0;
-                    if (d) {
-                        focus.attr("transform", `translate(${xScale(d.date)},0)`);
-                        focus.select("circle").attr("transform", `translate(0,${yScale(d.value)})`);
-                        tooltip.html(`<b>${d.date.toLocaleDateString('en-US')}</b><br>${yAxisLabel}: ${d.value.toFixed(0)}`).style("left", (event.pageX + 15) + "px").style("top", (event.pageY - 28) + "px");
-                    }
-                });
-        }
-        
-        // Shows/hides red date lines on timeline
-        function updateDateRangeHighlight() {
-            if (!timelineSvg || !timelineXScale || !timelineHeight) return;
-            const highlightGroup = timelineSvg.select(".date-range-highlight");
-            highlightGroup.selectAll("*").remove(); 
-            if (brushedDateRange) {
-                const x1 = timelineXScale(brushedDateRange[0]);
-                const x2 = timelineXScale(brushedDateRange[1]);
-                highlightGroup.append("line").attr("x1", x1).attr("x2", x1).attr("y1", 0).attr("y2", timelineHeight).attr("stroke", "red").attr("stroke-width", 2).attr("stroke-dasharray", "5,3");
-                highlightGroup.append("line").attr("x1", x2).attr("x2", x2).attr("y1", 0).attr("y2", timelineHeight).attr("stroke", "red").attr("stroke-width", 2).attr("stroke-dasharray", "5,3");
-            }
-        }
-
-        // Draws vessel polylines on the Leaflet map
-        function drawVesselTracks(companiesToShow) { 
-            vesselTracksLayer.clearLayers();
-            
-            const GAP_THRESHOLD_HOURS = 12; 
-            
-            const filteredVessels = vessels.filter(v => 
-                companiesToShow.has(v[NOME_PROPRIETA_COMPAGNIA])
-            );
-            
-            filteredVessels.forEach(vessel => {
-                const vesselEdges = edges.filter(e => 
-                    e.target === vessel.id && e.type === NOME_TIPO_TRACCIA
-                );
-                
-                let filteredEdges = vesselEdges;
-                if (brushedDateRange) {
-                    filteredEdges = filteredEdges.filter(e => {
-                        const edgeDate = new Date(e[NOME_PROPRIETA_DATA_LINK]);
-                        return edgeDate >= brushedDateRange[0] && edgeDate <= brushedDateRange[1];
-                    });
-                }
-                
-                if (filteredEdges.length === 0) return; 
-
-                filteredEdges.sort((a, b) => new Date(a[NOME_PROPRIETA_DATA_LINK]) - new Date(b[NOME_PROPRIETA_DATA_LINK]));
-                
-                const suspiciousPingsForThisVessel = [];
-                
-                let currentTrackSegment = [];
-                let lastPingTime = null;
-
-                for (const edge of filteredEdges) {
-                    const locationMetadata = locationNodes.nodes.find(loc => loc.id === edge.source);
-                    if (!locationMetadata) continue;
-                    const locationFeature = geography.features.find(f => 
-                        f.properties.Name === locationMetadata.Name && f.geometry.type === 'Point'
-                    ); 
-                    if (!locationFeature) continue;
-
-                    const coords = locationFeature.geometry.coordinates;
-                    const geoPoint = [coords[0], coords[1]]; 
-                    const pointForLeaflet = [coords[1], coords[0]]; 
-                    const currentPingTime = new Date(edge[NOME_PROPRIETA_DATA_LINK]);
-
-                    let foundZones = [];
-                    for (const zone of forbiddenZones) {
-                        if (d3.geoContains(zone.geometry, geoPoint)) {
-                            foundZones.push(zone.properties.Name || "Forbidden Zone");
-                        }
-                    }
-                    
-                    if (foundZones.length > 0) {
-                         suspiciousPingsForThisVessel.push({
-                            date: currentPingTime,
-                            zone: foundZones.join(', ') 
-                        });
-                    }
-                    
-                    if (lastPingTime) {
-                        const hoursDiff = (currentPingTime - lastPingTime) / (1000 * 60 * 60);
-                        
-                        if (hoursDiff > GAP_THRESHOLD_HOURS) {
-                            drawTrackSegment(vessel, currentTrackSegment, suspiciousPingsForThisVessel);
-                            
-                            const lastPoint = currentTrackSegment[currentTrackSegment.length - 1];
-                            if (lastPoint) { 
-                                L.polyline([lastPoint, pointForLeaflet], {
-                                    color: '#222222', 
-                                    weight: 2,
-                                    opacity: 0.7,
-                                    dashArray: '5, 10' 
-                                }).addTo(vesselTracksLayer)
-                                .bindPopup(`<b>Transponder Gap</b><br>${vessel.name}<br>${hoursDiff.toFixed(1)} hours`);
-                            }
-                            currentTrackSegment = [pointForLeaflet];
-                        } else {
-                            currentTrackSegment.push(pointForLeaflet);
-                        }
-                    } else {
-                        currentTrackSegment.push(pointForLeaflet);
-                    }
-                    lastPingTime = currentPingTime;
-                }
-                
-                drawTrackSegment(vessel, currentTrackSegment, suspiciousPingsForThisVessel);
-            });
-
-            // Helper: Draws a single track segment
-            function drawTrackSegment(vessel, coordinates, suspiciousPingsList) {
-                if (coordinates.length < 2) return;
-
-                let trackColor = '#007bff'; 
-                let trackWeight = 2;
-                let trackOpacity = 0.7;
-                
-                if (vessel[NOME_PROPRIETA_COMPAGNIA] === 'SouthSeafood Express Corp') {
-                    trackColor = '#dc3545'; 
-                    trackWeight = 3;
-                    trackOpacity = 0.8;
-                } else if (suspiciousPingsList.length > 0) {
-                    trackColor = '#FFA500'; 
-                    trackWeight = 3;
-                    trackOpacity = 0.8;
-                }
-
-                L.polyline(coordinates, { 
-                    color: trackColor, weight: trackWeight, opacity: trackOpacity
-                })
-                .addTo(vesselTracksLayer)
-                .bindPopup(`<b>Vessel:</b> ${vessel.name}<br><b>Company:</b> ${vessel[NOME_PROPRIETA_COMPAGNIA]}`)
-                .on("click", (e) => {
-                    const companyName = vessel[NOME_PROPRIETA_COMPAGNIA];
-
-                    if (companyName) {
-                        d3.select("#vessel-filter").property("value", companyName);
-                        updateDashboard(false); 
-                    } else {
-                        updateDetailsPanel(vessel, suspiciousPingsList);
-                    }
-                    
-                    L.DomEvent.stopPropagation(e); 
-                })
-                .on('mouseover', function(e) { this.setStyle({ weight: 5, opacity: 1 }); })
-                .on('mouseout', function(e) { this.setStyle({ weight: trackWeight, opacity: trackOpacity }); });
-            }
-        }
-        
-        // Populates the vessel filter
-        populateFilter(vessels); 
-
-        // Main function to update all visualizations
-        function updateAllCharts(companyName) {
-            const suspicionData = calculateSuspicionData(companyName, brushedDateRange);
-            const topN = d3.select("#top-n-input").property("valueAsNumber");
-
-            let companiesToShow;
-            if (companyName !== 'all') {
-                companiesToShow = new Set([companyName]);
-            } else {
-                let topCompanies = suspicionData.sortedCompanyTotals.slice(0, topN);
-                const sse = "SouthSeafood Express Corp";
-                if (!topCompanies.find(d => d[0] === sse) && suspicionData.sortedCompanyTotals.find(d => d[0] === sse)) {
-                    topCompanies.push(suspicionData.sortedCompanyTotals.find(d => d[0] === sse));
-                }
-                companiesToShow = new Set(topCompanies.map(d => d[0]));
-            }
-            
-            drawVesselTracks(companiesToShow); 
-            drawForceGraph(suspicionData, companyName);
-            drawTimelineChart(companyName); 
-        }
-
-        // Updates charts and info panel based on filters
-        function updateDashboard(resetBrush = false) {
-            const currentCompany = d3.select("#vessel-filter").property("value");
-            
-            if (currentCompany !== 'all') {
-                const companyVessels = vessels.filter(v => v[NOME_PROPRIETA_COMPAGNIA] === currentCompany);
-                let allSuspiciousPings = [];
-                companyVessels.forEach(vessel => {
-                    let relevantEdges = edges.filter(e => e.target === vessel.id && e.type === NOME_TIPO_TRACCIA);
-                    if (brushedDateRange) {
-                        relevantEdges = relevantEdges.filter(e => {
-                            const edgeDate = new Date(e[NOME_PROPRIETA_DATA_LINK]);
-                            return edgeDate >= brushedDateRange[0] && edgeDate <= brushedDateRange[1];
-                        });
-                    }
-                    relevantEdges.forEach(edge => {
-                           const locationMetadata = locationNodes.nodes.find(loc => loc.id === edge.source);
-                           if (!locationMetadata) return;
-                           const locationFeature = geography.features.find(f => f.properties.Name === locationMetadata.Name && f.geometry.type === 'Point'); 
-                           if (!locationFeature) return;
-                           const coords = locationFeature.geometry.coordinates;
-                           const geoPoint = [coords[0], coords[1]];
-
-                            let foundZones = [];
-                            for (const zone of forbiddenZones) {
-                                if (d3.geoContains(zone.geometry, geoPoint)) {
-                                    foundZones.push(zone.properties.Name || "Forbidden Zone");
-                                }
-                            }
-                            
-                            if (foundZones.length > 0) {
-                                allSuspiciousPings.push({
-                                    date: new Date(edge[NOME_PROPRIETA_DATA_LINK]),
-                                    zone: foundZones.join(', ') 
-                                });
-                            }
-                    });
-                });
-                updateDetailsPanel({ name: `All ${currentCompany} Vessels`, [NOME_PROPRIETA_COMPAGNIA]: currentCompany }, allSuspiciousPings);
-
-            } else {
-                d3.select("#info-box").html("<p>Click on a map track or a graph node for details.</p>");
-            }
-            
-            updateAllCharts(currentCompany);
-            
-            if (resetBrush && timelineSvg && chartBrush) {
-                timelineSvg.select(".brush").call(chartBrush.move, null);
-            }
-        }
-
-        // --- Control Listeners ---
-        
-        d3.select("#vessel-filter").on("change", () => updateDashboard(false));
-        d3.select("#top-n-input").on("change", () => updateDashboard(false));
-        
-        d3.select("#company-search").on("input", function() {
-            const searchText = this.value.toLowerCase();
-            const selectElement = d3.select("#vessel-filter").node();
-            const matchedOption = Array.from(selectElement.options).find(opt => opt.value !== 'all' && opt.value.toLowerCase().includes(searchText));
-            if (matchedOption) {
-                selectElement.value = matchedOption.value;
-                selectElement.dispatchEvent(new Event('change'));
-            } else if (searchText === "") {
-                 selectElement.value = 'all';
-                 selectElement.dispatchEvent(new Event('change'));
-            }
-        });
-        d3.select("#filter-date-button").on("click", () => {
-            const startDate = d3.select("#start-date").property("value");
-            const endDate = d3.select("#end-date").property("value");
-            if (startDate && endDate) {
-                brushedDateRange = [ new Date(startDate + "T00:00:00"), new Date(endDate + "T23:59:59") ];
-                console.log("Manual date filter applied:", brushedDateRange);
-                updateDashboard(false); 
-                updateDateRangeHighlight();
-                if (timelineSvg && chartBrush && timelineXScale) {
-                    const selectionPixels = [ timelineXScale(brushedDateRange[0]), timelineXScale(brushedDateRange[1]) ];
-                    timelineSvg.select(".brush").call(chartBrush.move, selectionPixels);
-                }
-            } else {
-                console.warn("Please select both a start and end date.");
-            }
-        });
-        d3.select("#reset-button").on("click", () => {
-            d3.select("#vessel-filter").property("value", "all");
-            brushedDateRange = null; 
-            d3.select("#company-search").property("value", "");
-            d3.select("#start-date").property("value", "");
-            d3.select("#end-date").property("value", "");
-            d3.select("#top-n-input").property("value", 10);
-            map.fitBounds(geoJSONLayer.getBounds());
-            updateDashboard(true); 
-            updateDateRangeHighlight();
-        });
-        
-        // Resize handler (debounced)
-        d3.select(window).on("resize", debounce(() => {
-            const currentCompany = d3.select("#vessel-filter").property("value");
-            updateAllCharts(currentCompany);
-        }, 250));
-        
-        // Initial dashboard load
-        setTimeout(() => {
-            updateDashboard(true);
-        }, 10);
-
-    }).catch(error => {
-        console.error("CRITICAL ERROR:", error);
-        d3.select("#dashboard").html(`<h2>Error loading data.</h2><p>Check the console for details.</p><p><i>${error.message}</i></p>`);
+  // ---------- Data ----------
+  Promise.all([d3.json("data/oceanus.json"), d3.json("data/geography.geojson")])
+    .then(([data, geography]) => init(data, geography))
+    .catch((err) => {
+      console.error(err);
+      $("#error-msg").textContent = err.message || String(err);
+      $("#error").hidden = false;
     });
-});
+
+  function init(data, geography) {
+    D = data;
+    geo = geography;
+    L = D.locations;
+    V = D.vessels;
+    COMP = D.companies;
+    P = {
+      off: D.pings.offsets,
+      loc: Int16Array.from(D.pings.loc),
+      t: Int32Array.from(D.pings.time),
+      dw: Int32Array.from(D.pings.dwell),
+    };
+    SSE_IDX = COMP.indexOf(SSE);
+    isPreserve = L.map((l) => l.kind === "preserve");
+    preserveIdx = L.map((_, i) => i).filter((i) => isPreserve[i]);
+    companyVessels = COMP.map(() => []);
+    V.forEach((v, i) => { if (v.company >= 0) companyVessels[v.company].push(i); });
+    fleet = V.map((_, i) => i).filter((i) => V[i].company >= 0);
+
+    const options = $("#search-options");
+    COMP.forEach((c) => options.append(h("option", { value: c, label: "Company" })));
+    fleet.forEach((vi) => options.append(h("option", { value: V[vi].name, label: `Vessel · ${COMP[V[vi].company]}` })));
+
+    aggregate();
+    wireControls();
+    app.dataset.state = "ready";
+    renderMap();
+    update({ animate: false });
+
+    const ro = new ResizeObserver(debounce(() => { renderMap(); update({ animate: false }); }, 150));
+    ro.observe($("#map"));
+    ro.observe($("#timeline"));
+  }
+
+  function debounce(fn, ms) {
+    let id;
+    return (...args) => { clearTimeout(id); id = setTimeout(() => fn(...args), ms); };
+  }
+
+  // Walks every ping once per date range; everything else reads from these totals.
+  function aggregate() {
+    const [r0, r1] = state.range || [-Infinity, Infinity];
+    const nL = L.length;
+    const comp = COMP.map(() => ({ pings: 0, minutes: 0, gaps: 0, active: 0 }));
+    const zc = new Float64Array(COMP.length * nL);
+    const zcp = new Int32Array(COMP.length * nL);
+    const zone = L.map(() => ({ pings: 0, minutes: 0 }));
+    const ves = V.map(() => ({ pings: 0, minutes: 0, gaps: 0, total: 0 }));
+
+    for (let vi = 0; vi < V.length; vi++) {
+      const c = V[vi].company;
+      const s = ves[vi];
+      let prevEnd = null;
+      for (let k = P.off[vi]; k < P.off[vi + 1]; k++) {
+        const t = P.t[k];
+        if (t < r0 || t > r1) continue;
+        const li = P.loc[k];
+        const dw = P.dw[k];
+        s.total++;
+        if (prevEnd !== null && t - prevEnd > GAP_MIN) s.gaps++;
+        prevEnd = prevEnd === null ? t + dw : Math.max(prevEnd, t + dw);
+        if (c < 0) continue;
+        zone[li].pings++;
+        zone[li].minutes += dw;
+        zc[c * nL + li] += dw;
+        zcp[c * nL + li]++;
+        if (isPreserve[li]) {
+          s.pings++;
+          s.minutes += dw;
+          comp[c].pings++;
+          comp[c].minutes += dw;
+        }
+      }
+      if (c >= 0) {
+        comp[c].gaps += s.gaps;
+        if (s.total) comp[c].active++;
+      }
+    }
+    const ranking = COMP.map((_, i) => i).filter((i) => comp[i].minutes > 0)
+      .sort((a, b) => comp[b].minutes - comp[a].minutes);
+    stats = { comp, zc, zcp, zone, ves, ranking };
+  }
+
+  function scopeCompanies() {
+    if (state.company >= 0) return [state.company];
+    const top = stats.ranking.slice(0, state.topN);
+    if (SSE_IDX >= 0 && !top.includes(SSE_IDX)) top.push(SSE_IDX);
+    return top;
+  }
+
+  function scopeVessels() {
+    if (state.vessel >= 0) return [state.vessel];
+    if (state.company >= 0) return companyVessels[state.company];
+    return fleet;
+  }
+
+  const trackColor = (vi) => (V[vi].company === SSE_IDX ? "var(--sse)"
+    : stats.ves[vi].pings > 0 ? "var(--suspect)" : "var(--track)");
+  const companyColor = (ci) => (ci === SSE_IDX ? "var(--sse)" : "var(--suspect)");
+
+  // ---------- Update pipeline ----------
+  function update({ reaggregate = false, animate = true } = {}) {
+    if (reaggregate) aggregate();
+    renderKpis();
+    renderTracks();
+    renderRegionState();
+    renderSide(animate);
+    renderTimeline();
+    renderFlows();
+    syncControls();
+  }
+
+  function setRange(range) {
+    state.range = range;
+    update({ reaggregate: true, animate: false });
+  }
+
+  function selectCompany(ci) {
+    Object.assign(state, { company: ci, vessel: -1, zone: -1, view: ci >= 0 ? "company" : "rank" });
+    update();
+  }
+  function selectVessel(vi) {
+    Object.assign(state, { vessel: vi, company: V[vi].company, zone: -1, view: "vessel" });
+    update();
+  }
+  function openZone(li) {
+    Object.assign(state, { zone: li, view: "zone" });
+    update();
+  }
+  function back({ animate = true } = {}) {
+    if (state.view === "zone") {
+      state.zone = -1;
+      state.view = state.vessel >= 0 ? "vessel" : state.company >= 0 ? "company" : "rank";
+    } else if (state.view === "vessel") {
+      state.vessel = -1;
+      state.view = "company";
+    } else if (state.view === "company") {
+      state.company = -1;
+      state.view = "rank";
+    } else return;
+    update({ animate });
+  }
+
+  // ---------- KPIs ----------
+  function renderKpis() {
+    let active = 0, pings = 0, minutes = 0, gaps = 0;
+    for (const vi of scopeVessels()) {
+      const s = stats.ves[vi];
+      if (s.total) active++;
+      pings += s.pings;
+      minutes += s.minutes;
+      gaps += s.gaps;
+    }
+    const scope = $("#kpi-scope");
+    const name = state.vessel >= 0 ? V[state.vessel].name : state.company >= 0 ? COMP[state.company] : "All fishing companies";
+    scope.textContent = name;
+    scope.title = name;
+    scope.classList.toggle("is-sse", state.company === SSE_IDX);
+    if (state.range) {
+      scope.append(h("span", { class: "kpi-delta", text: `${fmtShort(toDate(state.range[0]))} – ${fmtShort(toDate(state.range[1]))}` }));
+    }
+    $("#kpi-vessels").textContent = fmtInt(active);
+    $("#kpi-pings").textContent = fmtInt(pings);
+    $("#kpi-hours").textContent = fmtInt(Math.round(minutes / 60));
+    $("#kpi-gaps").textContent = fmtInt(gaps);
+  }
+
+  // ---------- Map ----------
+  const map = {};
+
+  function buildProjection(w, hgt) {
+    let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    const visit = (c) => {
+      if (typeof c[0] === "number") {
+        minLon = Math.min(minLon, c[0]); maxLon = Math.max(maxLon, c[0]);
+        minLat = Math.min(minLat, c[1]); maxLat = Math.max(maxLat, c[1]);
+      } else c.forEach(visit);
+    };
+    geo.features.forEach((f) => visit(f.geometry.coordinates));
+    const cos = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+    const pad = 14;
+    const dx = (maxLon - minLon) * cos;
+    const dy = maxLat - minLat;
+    const k = Math.min((w - pad * 2) / dx, (hgt - pad * 2) / dy);
+    const ox = (w - dx * k) / 2;
+    const oy = (hgt - dy * k) / 2;
+    return {
+      bounds: [minLon, maxLon, minLat, maxLat],
+      point: (lon, lat) => [ox + (lon - minLon) * cos * k, oy + (maxLat - lat) * k],
+      invert: (x, y) => [minLon + (x - ox) / (cos * k), maxLat - (y - oy) / k],
+    };
+  }
+
+  function dm(v, pos, neg, digits = 1) {
+    const a = Math.abs(v);
+    let d = Math.floor(a);
+    let m = +((a - d) * 60).toFixed(digits);
+    if (m >= 60) { d += 1; m = 0; }
+    const mm = digits ? m.toFixed(digits).padStart(digits + 3, "0") : String(m).padStart(2, "0");
+    return `${d}°${mm}′${v >= 0 ? pos : neg}`;
+  }
+
+  function renderMap() {
+    const host = $("#map");
+    d3.select(host).select("svg").remove();
+    const w = host.clientWidth;
+    const hgt = host.clientHeight;
+    if (!w || !hgt) return;
+    const proj = buildProjection(w, hgt);
+    map.proj = proj;
+    map.w = w;
+    map.h = hgt;
+    const path = d3.geoPath(d3.geoTransform({
+      point(x, y) { const p = proj.point(x, y); this.stream.point(p[0], p[1]); },
+    }));
+
+    const svg = d3.select(host).insert("svg", ":first-child")
+      .attr("viewBox", `0 0 ${w} ${hgt}`)
+      .attr("role", "img")
+      .attr("aria-label", "Chart of Oceanus with vessel tracks");
+    map.svg = svg;
+
+    const defs = svg.append("defs");
+    const hatch = defs.append("pattern").attr("id", "hatch").attr("patternUnits", "userSpaceOnUse")
+      .attr("width", 6).attr("height", 6).attr("patternTransform", "rotate(45)");
+    hatch.append("rect").attr("width", 6).attr("height", 6).style("fill", "var(--sse)").style("fill-opacity", 0.06);
+    hatch.append("line").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", 6)
+      .style("stroke", "var(--sse)").style("stroke-width", 1.2).style("stroke-opacity", 0.45);
+
+    const world = svg.append("g").attr("class", "world");
+    map.world = world;
+
+    const [minLon, maxLon, minLat, maxLat] = proj.bounds;
+    const step = 0.5;
+    const lons = d3.range(Math.floor(minLon / step) * step - 2, maxLon + 2, step);
+    const lats = d3.range(Math.floor(minLat / step) * step - 2, maxLat + 2, step);
+    const gratPath = [
+      ...lons.map((lon) => { const a = proj.point(lon, minLat - 3); const b = proj.point(lon, maxLat + 3); return `M${a}L${b}`; }),
+      ...lats.map((lat) => { const a = proj.point(minLon - 4, lat); const b = proj.point(maxLon + 4, lat); return `M${a}L${b}`; }),
+    ].join("");
+    world.append("path").attr("class", "graticule").attr("d", gratPath);
+
+    world.append("g").selectAll("path")
+      .data(geo.features.filter((f) => f.geometry.type !== "Point"))
+      .join("path")
+      .attr("class", (f) => `region ${kindOf(f)}`)
+      .attr("d", path)
+      .on("pointermove", (e, f) => regionTip(e, f))
+      .on("pointerleave", hideTip)
+      .on("click", (e, f) => {
+        const li = locIndex(f.properties.Name);
+        if (li >= 0 && (L[li].kind === "preserve" || L[li].kind === "fishing")) openZone(li);
+      });
+    map.regions = world.selectAll(".region");
+
+    map.tracks = world.append("g").attr("class", "tracks");
+
+    const overlay = svg.append("g").attr("class", "overlay");
+    map.gratLabels = overlay.append("g");
+    map.gratLabels.selectAll("text.lon").data(lons).join("text")
+      .attr("class", "grat-label lon").attr("text-anchor", "middle").text((d) => dm(d, "E", "W", 0));
+    map.gratLabels.selectAll("text.lat").data(lats).join("text")
+      .attr("class", "grat-label lat").attr("dy", "-0.35em").text((d) => dm(d, "N", "S", 0));
+
+    const places = L.map((l, i) => ({ ...l, i })).filter((l) => l.kind === "city" || l.kind === "buoy");
+    map.places = overlay.append("g").selectAll("g").data(places).join("g").attr("class", (d) => `place ${d.kind}`);
+    map.places.append("circle").attr("class", (d) => `place-dot ${d.kind}`).attr("r", (d) => (d.kind === "city" ? 3.5 : 2));
+    map.places.append("text").attr("class", (d) => `map-label ${d.kind === "buoy" ? "buoy" : ""}`)
+      .attr("x", 6).attr("dy", "0.35em").text((d) => d.name);
+
+    const areaLabels = L.map((l, i) => ({ ...l, i })).filter((l) => ["preserve", "fishing", "island"].includes(l.kind));
+    map.areaLabels = overlay.append("g").selectAll("text").data(areaLabels).join("text")
+      .attr("class", (d) => `map-label ${d.kind === "island" ? "" : "water"} ${d.kind}`)
+      .attr("text-anchor", "middle").attr("dy", "0.35em")
+      .text((d) => d.name);
+
+    map.locPt = L.map((l) => proj.point(l.lon, l.lat));
+
+    map.zoom = d3.zoom()
+      .scaleExtent([1, 14])
+      .translateExtent([[-w * 0.5, -hgt * 0.5], [w * 1.5, hgt * 1.5]])
+      .on("zoom", (e) => {
+        map.t = e.transform;
+        world.attr("transform", e.transform);
+        positionOverlay();
+      });
+    map.t = d3.zoomIdentity;
+    svg.call(map.zoom);
+    positionOverlay();
+
+    svg.on("pointermove.readout", (e) => {
+      const [x, y] = map.t.invert(d3.pointer(e));
+      const [lon, lat] = proj.invert(x, y);
+      $("#readout").textContent = `${dm(lat, "N", "S")}  ${dm(lon, "E", "W")}`;
+    });
+  }
+
+  function positionOverlay() {
+    const t = map.t;
+    const lonPx = t.k * (map.proj.point(1, 0)[0] - map.proj.point(0.5, 0)[0]);
+    const latPx = t.k * (map.proj.point(0, 0)[1] - map.proj.point(0, 0.5)[1]);
+    const lonEvery = Math.ceil(78 / lonPx);
+    const latEvery = Math.ceil(30 / latPx);
+    map.gratLabels.selectAll("text.lon")
+      .attr("x", (d) => t.applyX(map.proj.point(d, 0)[0]))
+      .attr("y", 14)
+      .attr("display", (d, i) => {
+        const x = t.applyX(map.proj.point(d, 0)[0]);
+        return i % lonEvery || x < 90 || x > map.w - 60 ? "none" : null;
+      });
+    map.gratLabels.selectAll("text.lat")
+      .attr("x", 6)
+      .attr("y", (d) => t.applyY(map.proj.point(0, d)[1]))
+      .attr("display", (d, i) => {
+        const y = t.applyY(map.proj.point(0, d)[1]);
+        return i % latEvery || y < 30 || y > map.h - 36 ? "none" : null;
+      });
+    map.places.attr("transform", (d) => `translate(${t.apply(map.proj.point(d.lon, d.lat))})`);
+    map.areaLabels.attr("transform", (d) => `translate(${t.apply(map.proj.point(d.lon, d.lat))})`);
+    declutter();
+  }
+
+  // Greedy label placement: higher-priority labels claim space first, overlapping ones hide.
+  const LABEL_PRIORITY = { preserve: 0, city: 1, fishing: 2, island: 3, buoy: 4 };
+  function declutter() {
+    const labels = [
+      ...map.areaLabels.nodes(),
+      ...map.places.select("text").nodes(),
+    ].sort((a, b) => LABEL_PRIORITY[a.__data__.kind] - LABEL_PRIORITY[b.__data__.kind]);
+    const placed = [];
+    for (const el of labels) {
+      if (el.__data__.kind === "buoy" && map.t.k < 1.8) {
+        el.setAttribute("display", "none");
+        continue;
+      }
+      el.removeAttribute("display");
+      const b = el.getBoundingClientRect();
+      const hit = placed.some((p) => b.left < p.right + 2 && b.right > p.left - 2 && b.top < p.bottom && b.bottom > p.top);
+      if (hit) el.setAttribute("display", "none");
+      else placed.push(b);
+    }
+  }
+
+  const kindOf = (f) => ({ "Ecological Preserve": "preserve", "Fishing Ground": "fishing", Island: "island" }[f.properties["*Kind"]] || "other");
+  const locIndex = (name) => L.findIndex((l) => l.name === name);
+
+  function regionTip(e, f) {
+    const li = locIndex(f.properties.Name);
+    const l = L[li];
+    if (!l) return;
+    const z = stats.zone[li];
+    let html = `<b>${esc(l.name)}</b><br>${KIND_LABEL[l.kind]}`;
+    if (z.pings) html += `<br><span class="tt-num">${fmtH(z.minutes)}</span> fleet dwell · <span class="tt-num">${fmtInt(z.pings)}</span> pings`;
+    if (l.fish) html += `<br>${l.fish.map(esc).join(", ")}`;
+    showTip(e, html);
+  }
+
+  function hash(n) {
+    let x = (n + 1) * 2654435761;
+    x ^= x >>> 13;
+    return (x >>> 0) / 4294967295;
+  }
+
+  function renderTracks() {
+    if (!map.tracks) return;
+    const g = map.tracks;
+    g.selectAll("*").remove();
+    const [r0, r1] = state.range || [-Infinity, Infinity];
+    const vessels = state.company >= 0 ? companyVessels[state.company]
+      : scopeCompanies().flatMap((ci) => companyVessels[ci]);
+    const ordered = [...vessels].sort((a, b) => (V[a].company === SSE_IDX) - (V[b].company === SSE_IDX));
+    const spread = Math.min(map.w, map.h) * 0.012;
+
+    for (const vi of ordered) {
+      const jx = (hash(vi) - 0.5) * spread;
+      const jy = (hash(vi + 999) - 0.5) * spread;
+      const segs = [];
+      const gaps = [];
+      let seg = [];
+      let prevLoc = -1, prevEnd = null, prevPt = null;
+      for (let k = P.off[vi]; k < P.off[vi + 1]; k++) {
+        const t = P.t[k];
+        if (t < r0 || t > r1) continue;
+        const li = P.loc[k];
+        const base = map.locPt[li];
+        const pt = [base[0] + jx, base[1] + jy];
+        if (prevEnd !== null && t - prevEnd > GAP_MIN) {
+          if (seg.length > 1) segs.push(seg);
+          if (prevPt && li !== prevLoc) gaps.push({ a: prevPt, b: pt, minutes: t - prevEnd, at: prevEnd });
+          seg = [pt];
+        } else if (li !== prevLoc) seg.push(pt);
+        prevLoc = li;
+        prevPt = pt;
+        prevEnd = prevEnd === null ? t + P.dw[k] : Math.max(prevEnd, t + P.dw[k]);
+      }
+      if (seg.length > 1) segs.push(seg);
+      if (!segs.length && !gaps.length) continue;
+
+      const isSse = V[vi].company === SSE_IDX;
+      const suspect = stats.ves[vi].pings > 0;
+      g.selectAll(null).data(gaps).join("path")
+        .attr("class", "track gap")
+        .attr("data-v", vi)
+        .attr("d", (d) => `M${d.a}L${d.b}`)
+        .on("pointermove", (e, d) => showTip(e, `<b>Transponder dark</b><br>${esc(V[vi].name)}<br><span class="tt-num">${fmtInt(Math.round(d.minutes / 60))} h</span> from ${fmtDay(toDate(d.at))}`))
+        .on("pointerleave", hideTip);
+      g.append("path")
+        .attr("class", "track")
+        .attr("data-v", vi)
+        .attr("d", segs.map((s) => `M${s.join("L")}`).join(""))
+        .style("stroke", trackColor(vi))
+        .style("stroke-width", isSse ? 2.2 : suspect ? 1.2 : 1)
+        .style("stroke-opacity", isSse ? 0.9 : suspect ? 0.5 : 0.35)
+        .on("pointerenter", () => focusTrack(vi))
+        .on("pointermove", (e) => {
+          const s = stats.ves[vi];
+          showTip(e, `<b>${esc(V[vi].name)}</b><br>${esc(COMP[V[vi].company] || "No company")}<br><span class="tt-num">${fmtH(s.minutes)}</span> in preserves · <span class="tt-num">${s.gaps}</span> gaps`);
+        })
+        .on("pointerleave", () => { hideTip(); focusTrack(state.vessel); })
+        .on("click", (e) => { e.stopPropagation(); selectVessel(vi); });
+    }
+    focusTrack(state.vessel);
+  }
+
+  function focusTrack(vi) {
+    if (!map.tracks) return;
+    map.tracks.classed("has-focus", vi >= 0);
+    map.tracks.selectAll(".track").classed("is-focus", function () { return +this.dataset.v === vi; });
+    if (vi >= 0) map.tracks.selectAll(".track.is-focus").raise();
+  }
+
+  function renderRegionState() {
+    if (!map.regions) return;
+    map.regions.classed("is-selected", (f) => state.zone >= 0 && f.properties.Name === L[state.zone].name);
+  }
+
+  function zoomBy(k) {
+    map.svg.transition().duration(reduceMotion.matches ? 0 : 220).ease(d3.easeCubicOut).call(map.zoom.scaleBy, k);
+  }
+  function zoomFit() {
+    map.svg.transition().duration(reduceMotion.matches ? 0 : 260).ease(d3.easeCubicOut).call(map.zoom.transform, d3.zoomIdentity);
+  }
+
+  // ---------- Side panel ----------
+  function renderSide(animate) {
+    const host = $("#side-view");
+    const content = state.view === "vessel" ? vesselView()
+      : state.view === "company" ? companyView()
+        : state.view === "zone" ? zoneView() : rankView();
+    host.replaceChildren(...content);
+    if (animate && !reduceMotion.matches) {
+      host.animate([{ opacity: 0, transform: "translateY(4px)" }, { opacity: 1, transform: "none" }],
+        { duration: 180, easing: "cubic-bezier(0.23, 1, 0.32, 1)" });
+    }
+  }
+
+  function rankList(items, onPick) {
+    const max = d3.max(items, (d) => d.value) || 1;
+    return h("ol", { class: "rank" }, items.map((d, i) => h("li", {},
+      h("button", { type: "button", class: `rank-item${d.sse ? " is-sse" : ""}`, onclick: () => onPick(d.id) },
+        h("span", { class: "rank-n", text: d.n ?? i + 1 }),
+        h("span", { class: "rank-name", text: d.name, title: d.name }),
+        h("span", { class: "rank-val", text: d.label }),
+        h("span", { class: "rank-bar" }, h("i", { style: `transform: scaleX(${Math.max(d.value / max, 0.01)})` }))))));
+  }
+
+  function statGrid(rows) {
+    return h("dl", { class: "stat-grid" }, rows.map(([k, v]) => h("div", { class: "stat" }, h("dt", { text: k }), h("dd", { text: v }))));
+  }
+
+  function head({ eyebrow, meta, title, sse, backLabel }) {
+    return h("div", { class: "side-head" },
+      backLabel ? h("button", { type: "button", class: "back", onclick: () => back() }, `← ${backLabel}`) : null,
+      h("div", { class: "side-eyebrow" }, h("span", { text: eyebrow }), meta ? h("span", { text: meta }) : null),
+      h("h2", { class: `side-title${sse ? " is-sse" : ""}`, text: title }));
+  }
+
+  function rankView() {
+    const items = stats.ranking.map((ci) => ({ id: ci, name: COMP[ci], value: stats.comp[ci].minutes, label: fmtH(stats.comp[ci].minutes), sse: ci === SSE_IDX }));
+    const body = [];
+    if (SSE_IDX >= 0 && !stats.ranking.includes(SSE_IDX)) {
+      body.push(h("p", { class: "side-note" }, h("strong", { text: SSE }), " logged no dwell time inside preserves in this period. Its tracks stay on the chart in red."));
+    }
+    body.push(items.length ? rankList(items, selectCompany) : h("div", { class: "empty", text: "No preserve activity in this period." }));
+    return [
+      head({ eyebrow: "By hours inside preserves", meta: `${items.length} companies`, title: "Suspect companies" }),
+      h("div", { class: "side-body" }, body),
+    ];
+  }
+
+  function companyView() {
+    const ci = state.company;
+    const c = stats.comp[ci];
+    const rank = stats.ranking.indexOf(ci);
+    const vessels = companyVessels[ci].map((vi) => ({ id: vi, name: V[vi].name, value: stats.ves[vi].minutes, label: fmtH(stats.ves[vi].minutes), sse: ci === SSE_IDX }))
+      .sort((a, b) => b.value - a.value);
+    const zones = preserveIdx.map((li) => ({ li, m: stats.zc[ci * L.length + li] })).filter((z) => z.m > 0).sort((a, b) => b.m - a.m);
+    return [
+      head({ eyebrow: "Company", meta: rank >= 0 ? `Rank ${rank + 1} of ${stats.ranking.length}` : "Not ranked", title: COMP[ci], sse: ci === SSE_IDX, backLabel: "All suspects" }),
+      h("div", { class: "side-body" },
+        statGrid([["Vessels", fmtInt(companyVessels[ci].length)], ["Hours in preserves", fmtInt(Math.round(c.minutes / 60))], ["Pings in preserves", fmtInt(c.pings)], ["Transponder gaps", fmtInt(c.gaps)]]),
+        h("p", { class: "section-label", text: "Time by preserve" }),
+        zones.length
+          ? h("div", { class: "chips" }, zones.map((z) => h("button", { type: "button", class: "chip", onclick: () => openZone(z.li), text: `${L[z.li].name} · ${fmtH(z.m)}` })))
+          : h("p", { class: "side-note", text: "No dwell time inside preserves in this period." }),
+        h("p", { class: "section-label", text: "Vessels" }),
+        rankList(vessels.map((v, i) => ({ ...v, n: i + 1 })), selectVessel)),
+    ];
+  }
+
+  function visitsOf(vi) {
+    const [r0, r1] = state.range || [-Infinity, Infinity];
+    const visits = [];
+    let cur = null;
+    for (let k = P.off[vi]; k < P.off[vi + 1]; k++) {
+      const t = P.t[k];
+      if (t < r0 || t > r1) continue;
+      const li = P.loc[k];
+      if (!isPreserve[li]) { cur = null; continue; }
+      if (cur && cur.li === li) cur.minutes += P.dw[k];
+      else visits.push(cur = { li, start: t, minutes: P.dw[k] });
+    }
+    return visits.reverse();
+  }
+
+  function vesselView() {
+    const vi = state.vessel;
+    const v = V[vi];
+    const s = stats.ves[vi];
+    const visits = visitsOf(vi);
+    const shown = visits.slice(0, 60);
+    return [
+      head({ eyebrow: `${v.type.replace(/\./g, " · ").replace(/([a-z])([A-Z])/g, "$1 $2")}${v.flag ? ` · ${v.flag}` : ""}`, title: v.name, sse: v.company === SSE_IDX, backLabel: COMP[v.company] }),
+      h("div", { class: "side-body" },
+        statGrid([["Hours in preserves", fmtInt(Math.round(s.minutes / 60))], ["Preserve visits", fmtInt(visits.length)], ["Transponder gaps", fmtInt(s.gaps)], ["Tonnage · length", `${v.tonnage ?? "–"} t · ${v.length ?? "–"} m`]]),
+        h("p", { class: "section-label", text: visits.length > shown.length ? `Latest preserve visits · ${shown.length} of ${visits.length}` : "Preserve visits" }),
+        shown.length
+          ? h("ul", { class: "visits" }, shown.map((d) => h("li", {},
+            h("span", {}, h("span", { class: "when", text: fmtDay(toDate(d.start)) }), ` · ${L[d.li].name}`),
+            h("span", { class: "when", text: fmtH(d.minutes) }))))
+          : h("p", { class: "side-note", text: "No visits to preserves in this period." }),
+        s.gaps ? h("p", { class: "side-note", text: "Dashed lines on the chart mark stretches of more than 12 hours between the end of one ping and the next, when the transponder went quiet." }) : null),
+    ];
+  }
+
+  function zoneView() {
+    const li = state.zone;
+    const l = L[li];
+    const z = stats.zone[li];
+    const companies = COMP.map((name, ci) => ({ id: ci, name, value: stats.zc[ci * L.length + li], sse: ci === SSE_IDX }))
+      .filter((d) => d.value > 0).sort((a, b) => b.value - a.value)
+      .map((d) => ({ ...d, label: fmtH(d.value) }));
+    return [
+      head({ eyebrow: KIND_LABEL[l.kind], title: l.name, backLabel: "Back" }),
+      h("div", { class: "side-body" },
+        statGrid([["Fleet hours here", fmtInt(Math.round(z.minutes / 60))], ["Pings", fmtInt(z.pings)], ["Companies present", fmtInt(companies.length)], ["Species", fmtInt(l.fish ? l.fish.length : 0)]]),
+        l.kind === "preserve" ? h("p", { class: "side-note", text: "Protected area. Every hour a fishing vessel spends here counts towards its company's suspicion score." }) : null,
+        l.fish ? [h("p", { class: "section-label", text: "Species recorded here" }), h("div", { class: "chips" }, l.fish.map((f) => h("span", { class: "chip", text: f })))] : null,
+        h("p", { class: "section-label", text: "Companies by hours here" }),
+        companies.length ? rankList(companies, selectCompany) : h("p", { class: "side-note", text: "No fishing-fleet pings here in this period." })),
+    ];
+  }
+
+  // ---------- Timeline ----------
+  function weeklySeries() {
+    const start = d3.utcMonday.floor(toDate(PERIOD[0]));
+    const weeks = d3.utcMonday.range(start, toDate(PERIOD[1]));
+    const bins = new Float64Array(weeks.length);
+    const idx = (min) => Math.floor((BASE + min * 60000 - start.getTime()) / (7 * 864e5));
+    if (state.metric === "cargo") {
+      D.cargo.day.forEach((day, i) => {
+        const b = idx(day * DAY);
+        if (b >= 0 && b < bins.length) bins[b] += D.cargo.qty[i];
+      });
+    } else {
+      for (const vi of scopeVessels()) {
+        for (let k = P.off[vi]; k < P.off[vi + 1]; k++) {
+          if (!isPreserve[P.loc[k]]) continue;
+          const b = idx(P.t[k]);
+          if (b >= 0 && b < bins.length) bins[b] += P.dw[k] / 60;
+        }
+      }
+    }
+    return weeks.map((date, i) => ({ date, value: bins[i] }));
+  }
+
+  function renderTimeline() {
+    const host = $("#timeline");
+    d3.select(host).select("svg").remove();
+    const w = host.clientWidth;
+    const hgt = host.clientHeight;
+    if (!w || !hgt) return;
+    const m = { top: 12, right: 16, bottom: 22, left: 46 };
+    const iw = w - m.left - m.right;
+    const ih = hgt - m.top - m.bottom;
+    if (iw < 50 || ih < 40) return;
+
+    const data = weeklySeries();
+    const cargo = state.metric === "cargo";
+    const color = cargo ? "var(--accent)"
+      : state.company === SSE_IDX ? "var(--sse)"
+        : state.company >= 0 ? "var(--suspect)" : "var(--accent)";
+    const unit = cargo ? "t landed" : "h in preserves";
+    $(".timeline-panel .hint").textContent = cargo && state.company >= 0
+      ? "Cargo records aren't linked to vessels, so this shows the whole fleet. Drag to filter by date."
+      : "Drag across the chart to filter every view by date.";
+
+    const x = d3.scaleUtc().domain([toDate(PERIOD[0]), toDate(PERIOD[1])]).range([0, iw]);
+    const y = d3.scaleLinear().domain([0, d3.max(data, (d) => d.value) || 1]).nice(4).range([ih, 0]);
+
+    const svg = d3.select(host).append("svg").attr("viewBox", `0 0 ${w} ${hgt}`)
+      .attr("role", "img").attr("aria-label", `Weekly ${unit}`);
+    const g = svg.append("g").attr("transform", `translate(${m.left},${m.top})`);
+
+    g.append("g").selectAll("line").data(y.ticks(4)).join("line")
+      .attr("class", "grid-line").attr("x1", 0).attr("x2", iw).attr("y1", y).attr("y2", y);
+    g.append("g").attr("class", "axis").attr("transform", `translate(0,${ih})`)
+      .call(d3.axisBottom(x).ticks(d3.utcMonth.every(iw < 420 ? 2 : 1)).tickFormat(d3.utcFormat("%b")).tickSizeOuter(0));
+    g.append("g").attr("class", "axis")
+      .call(d3.axisLeft(y).ticks(4).tickFormat(d3.format("~s")).tickSize(0).tickPadding(6))
+      .call((a) => a.select(".domain").remove());
+
+    const mid = (d) => x(d3.utcDay.offset(d.date, 3.5));
+    g.append("path").datum(data).attr("class", "area").style("fill", color)
+      .attr("d", d3.area().x(mid).y0(ih).y1((d) => y(d.value)).curve(d3.curveMonotoneX));
+    g.append("path").datum(data).attr("class", "area-line").style("stroke", color)
+      .attr("d", d3.line().x(mid).y((d) => y(d.value)).curve(d3.curveMonotoneX));
+
+    const focus = g.append("g").attr("display", "none").attr("pointer-events", "none");
+    focus.append("line").attr("class", "focus-line").attr("y1", 0).attr("y2", ih);
+    const dot = focus.append("circle").attr("class", "focus-dot").attr("r", 3.5).style("stroke", color);
+
+    const brush = d3.brushX().extent([[0, 0], [iw, ih]]).on("end", (e) => {
+      if (!e.sourceEvent) return;
+      if (!e.selection) { setRange(null); return; }
+      const [a, b] = e.selection.map((px) => d3.utcDay.round(x.invert(px)));
+      if (b - a < 864e5) { setRange(null); return; }
+      setRange([fromDate(a), fromDate(b) - 1]);
+    });
+    const bg = g.append("g").attr("class", "brush").call(brush);
+    if (state.range) bg.call(brush.move, [x(toDate(state.range[0])), x(toDate(state.range[1] + 1))]);
+
+    const bisect = d3.bisector((d) => d.date).center;
+    bg.on("pointermove.focus", (e) => {
+      const [px] = d3.pointer(e, g.node());
+      const d = data[bisect(data, d3.utcDay.offset(x.invert(px), -3.5))];
+      if (!d) return;
+      focus.attr("display", null).attr("transform", `translate(${mid(d)},0)`);
+      dot.attr("cy", y(d.value));
+      showTip(e, `Week of ${fmtDay(d.date)}<br><span class="tt-num">${fmtInt(Math.round(d.value))}</span> ${unit}`);
+    }).on("pointerleave.focus", () => { focus.attr("display", "none"); hideTip(); });
+  }
+
+  // ---------- Flows ----------
+  function renderFlows() {
+    const host = $("#flows");
+    d3.select(host).selectAll("svg, .empty").remove();
+    const w = host.clientWidth;
+    const hgt = host.clientHeight;
+    if (!w || !hgt) return;
+    const nL = L.length;
+    const companies = scopeCompanies().filter((ci) => stats.comp[ci].minutes > 0);
+    const zones = preserveIdx;
+    const links = [];
+    companies.forEach((ci) => zones.forEach((li) => {
+      const v = stats.zc[ci * nL + li];
+      if (v > 0) links.push({ ci, li, v, pings: stats.zcp[ci * nL + li] });
+    }));
+    $("#flows-meta").textContent = state.company >= 0 ? "hours inside each preserve"
+      : `top ${state.topN}${SSE_IDX >= 0 && !stats.ranking.slice(0, state.topN).includes(SSE_IDX) ? " + SouthSeafood" : ""} · hours`;
+    if (!links.length) {
+      host.append(h("div", { class: "empty", text: "No preserve activity for this selection and period." }));
+      return;
+    }
+
+    const narrow = w < 420;
+    const m = { top: 12, bottom: 12, left: narrow ? 108 : 150, right: narrow ? 104 : 132 };
+    const nodeW = 7;
+    const x0 = m.left;
+    const x1 = w - m.right;
+    const ih = hgt - m.top - m.bottom;
+    const total = d3.sum(links, (d) => d.v);
+    const leftGap = Math.min(6, (ih * 0.35) / Math.max(companies.length - 1, 1));
+    const rightGap = 14;
+    const ky = Math.min((ih - leftGap * (companies.length - 1)) / total, (ih - rightGap * (zones.length - 1)) / total);
+
+    const cTot = new Map(companies.map((ci) => [ci, d3.sum(links.filter((l) => l.ci === ci), (l) => l.v)]));
+    const zTot = new Map(zones.map((li) => [li, d3.sum(links.filter((l) => l.li === li), (l) => l.v)]));
+    const leftH = d3.sum(companies, (ci) => Math.max(cTot.get(ci) * ky, 1.5)) + leftGap * (companies.length - 1);
+    const rightH = d3.sum(zones, (li) => zTot.get(li) * ky) + rightGap * (zones.length - 1);
+
+    const cNode = new Map();
+    let yy = m.top + (ih - leftH) / 2;
+    companies.forEach((ci) => {
+      const hh = Math.max(cTot.get(ci) * ky, 1.5);
+      cNode.set(ci, { y: yy, h: hh, off: 0 });
+      yy += hh + leftGap;
+    });
+    const zNode = new Map();
+    yy = m.top + (ih - rightH) / 2;
+    zones.forEach((li) => {
+      const hh = zTot.get(li) * ky;
+      zNode.set(li, { y: yy, h: hh, off: 0 });
+      yy += hh + rightGap;
+    });
+    links.forEach((l) => {
+      const s = cNode.get(l.ci);
+      const t = zNode.get(l.li);
+      l.w = l.v * ky;
+      l.sy = s.y + s.off + l.w / 2;
+      l.ty = t.y + t.off + l.w / 2;
+      s.off += l.w;
+      t.off += l.w;
+    });
+
+    const svg = d3.select(host).append("svg").attr("class", "flows-svg").attr("viewBox", `0 0 ${w} ${hgt}`)
+      .attr("role", "img").attr("aria-label", "Hours each company spent in each preserve");
+    const cx = (x0 + nodeW + x1) / 2;
+    const link = svg.append("g").selectAll("path").data(links).join("path")
+      .attr("class", "flow-link")
+      .attr("d", (l) => `M${x0 + nodeW},${l.sy}C${cx},${l.sy} ${cx},${l.ty} ${x1},${l.ty}`)
+      .style("stroke", (l) => companyColor(l.ci))
+      .style("stroke-width", (l) => Math.max(l.w, 1))
+      .on("pointerenter", (e, l) => focusFlows((d) => d === l))
+      .on("pointermove", (e, l) => showTip(e, `<b>${esc(COMP[l.ci])}</b> → ${esc(L[l.li].name)}<br><span class="tt-num">${fmtH(l.v)}</span> · <span class="tt-num">${fmtInt(l.pings)}</span> pings`))
+      .on("pointerleave", () => { hideTip(); focusFlows(null); })
+      .on("click", (e, l) => selectCompany(l.ci));
+
+    const trunc = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+    const cG = svg.append("g").selectAll("g").data(companies).join("g").attr("class", "flow-node flow-hit")
+      .on("pointerenter", (e, ci) => focusFlows((l) => l.ci === ci))
+      .on("pointermove", (e, ci) => showTip(e, `<b>${esc(COMP[ci])}</b><br><span class="tt-num">${fmtH(cTot.get(ci))}</span> in preserves`))
+      .on("pointerleave", () => { hideTip(); focusFlows(null); })
+      .on("click", (e, ci) => selectCompany(ci));
+    cG.append("rect").attr("x", x0).attr("y", (ci) => cNode.get(ci).y).attr("width", nodeW)
+      .attr("height", (ci) => cNode.get(ci).h).style("fill", companyColor);
+    cG.append("text").attr("class", "flow-label").attr("x", x0 - 8).attr("y", (ci) => cNode.get(ci).y + cNode.get(ci).h / 2)
+      .attr("dy", "0.35em").attr("text-anchor", "end")
+      .style("fill", (ci) => (ci === SSE_IDX ? "var(--sse)" : null))
+      .text((ci) => trunc(COMP[ci], narrow ? 15 : 22));
+
+    const zG = svg.append("g").selectAll("g").data(zones.filter((li) => zTot.get(li) > 0)).join("g").attr("class", "flow-node flow-hit")
+      .on("pointerenter", (e, li) => focusFlows((l) => l.li === li))
+      .on("pointerleave", () => focusFlows(null))
+      .on("click", (e, li) => openZone(li));
+    zG.append("rect").attr("x", x1).attr("y", (li) => zNode.get(li).y).attr("width", nodeW)
+      .attr("height", (li) => zNode.get(li).h).style("fill", "var(--sse)").style("fill-opacity", 0.85);
+    zG.append("text").attr("class", "flow-label zone").attr("x", x1 + nodeW + 8)
+      .attr("y", (li) => zNode.get(li).y + zNode.get(li).h / 2).attr("dy", "-0.15em").text((li) => L[li].name);
+    zG.append("text").attr("class", "flow-value").attr("x", x1 + nodeW + 8)
+      .attr("y", (li) => zNode.get(li).y + zNode.get(li).h / 2).attr("dy", "1.1em").text((li) => fmtH(zTot.get(li)));
+
+    function focusFlows(pred) {
+      const p = pred || (state.zone >= 0 && isPreserve[state.zone] ? (l) => l.li === state.zone : null);
+      svg.classed("has-focus", !!p);
+      link.classed("is-focus", (l) => !!p && p(l));
+    }
+    focusFlows(null);
+  }
+
+  // ---------- Controls ----------
+  function syncControls() {
+    const search = $("#search");
+    if (document.activeElement !== search) {
+      search.value = state.vessel >= 0 ? V[state.vessel].name : state.company >= 0 ? COMP[state.company] : "";
+    }
+    $("#start-date").value = state.range ? isoDay(toDate(state.range[0])) : "";
+    $("#end-date").value = state.range ? isoDay(toDate(state.range[1])) : "";
+    document.querySelectorAll("#topn button").forEach((b) => b.setAttribute("aria-checked", String(+b.dataset.value === state.topN)));
+    document.querySelectorAll("#metric button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.value === state.metric)));
+    $("#topn").style.opacity = state.company >= 0 ? 0.5 : 1;
+  }
+
+  function runSearch(q) {
+    const s = q.trim().toLowerCase();
+    if (!s) {
+      if (state.company >= 0 || state.vessel >= 0) selectCompany(-1);
+      return;
+    }
+    const ci = COMP.findIndex((c) => c.toLowerCase() === s);
+    if (ci >= 0) return selectCompany(ci);
+    const vi = fleet.find((i) => V[i].name.toLowerCase() === s);
+    if (vi !== undefined) return selectVessel(vi);
+    const partial = COMP.findIndex((c) => c.toLowerCase().includes(s));
+    if (partial >= 0) return selectCompany(partial);
+    const pv = fleet.find((i) => V[i].name.toLowerCase().includes(s));
+    if (pv !== undefined) selectVessel(pv);
+  }
+
+  function wireControls() {
+    const search = $("#search");
+    search.addEventListener("change", () => runSearch(search.value));
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") runSearch(search.value);
+      if (e.key === "Escape") search.blur();
+    });
+
+    document.querySelectorAll("#topn button").forEach((b) => b.addEventListener("click", () => {
+      state.topN = +b.dataset.value;
+      update({ animate: false });
+    }));
+    document.querySelectorAll("#metric button").forEach((b) => b.addEventListener("click", () => {
+      state.metric = b.dataset.value;
+      syncControls();
+      renderTimeline();
+    }));
+
+    const onDate = () => {
+      const s = $("#start-date").value;
+      const e = $("#end-date").value;
+      if (!s && !e) return setRange(null);
+      if (!s || !e) return;
+      const a = fromISO(s);
+      const b = fromISO(e) + DAY - 1;
+      setRange(a <= b ? [a, b] : [fromISO(e), fromISO(s) + DAY - 1]);
+    };
+    $("#start-date").addEventListener("change", onDate);
+    $("#end-date").addEventListener("change", onDate);
+
+    $("#reset").addEventListener("click", () => {
+      Object.assign(state, { company: -1, vessel: -1, zone: -1, view: "rank", topN: 10, range: null });
+      zoomFit();
+      update({ reaggregate: true });
+    });
+
+    $("#zoom-in").addEventListener("click", () => zoomBy(1.6));
+    $("#zoom-out").addEventListener("click", () => zoomBy(1 / 1.6));
+    $("#zoom-fit").addEventListener("click", zoomFit);
+
+    document.addEventListener("keydown", (e) => {
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+      if (e.key === "/" && !typing) {
+        e.preventDefault();
+        search.focus();
+        search.select();
+      } else if (e.key === "Escape" && !typing) {
+        back({ animate: false });
+      }
+    });
+  }
+})();

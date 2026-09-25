@@ -1,76 +1,122 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VAST Challenge MC2 - Oceanus Analysis</title>
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@600;700&display=swap" rel="stylesheet">
-
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link rel="stylesheet" href="style.css?v=48"> </head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Oceanus Fleet Watch</title>
+<meta name="description" content="Visual analytics for VAST Challenge 2024 MC2: which fishing companies operate inside Oceanus' ecological preserves, and when.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2314304a'/%3E%3Cpath d='M16 5v22M5 16h22' stroke='%23e9eef0' stroke-width='1.5'/%3E%3Cpath d='M16 7l3 9-3 9-3-9z' fill='%23e9eef0'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Newsreader:ital,opsz,wght@1,6..72,400;1,6..72,500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
 <body>
-    
-    <div id="tooltip" class="tooltip" style="opacity:0;"></div>
+<a class="skip-link" href="#suspects">Skip to suspects</a>
+<div class="app" id="app" data-state="loading">
 
-    <header>
-        <div class="logo-container">
-            <img src="Fisheye VAST Challenge 2024.png" alt="Fisheye Logo">
-        </div> 
-        <h1>VAST Challenge 2024: Oceanus Fleet Analysis</h1>
-    </header>
-
-    <div class="container">
-        <div id="controls-container">
-            <div id="controls">
-                <h2>Controls</h2>
-                
-                <label for="company-search">Search Company:</label>
-                <input type="text" id="company-search" placeholder="Type to filter...">
-                
-                <label for="vessel-filter">Filter by company:</label>
-                <select id="vessel-filter">
-                    <option value="all">Show all</option>
-                    </select>
-                
-                <label for="top-n-input">Show Top N Suspects (on 'All'):</label>
-                <input type="number" id="top-n-input" min="3" max="50" value="10" style="width: 100%;">
-                
-                <button id="reset-button">Reset Visualization</button>
-                
-                <hr>
-                <label for="start-date">Start Date:</label>
-                <input type="date" id="start-date">
-                <label for="end-date">End Date:</label>
-                <input type="date" id="end-date">
-                <button id="filter-date-button">Filter by Date</button>
-            </div>
-            
-            <aside id="details">
-                <h2>Selected Details</h2>
-                <div id="info-box">
-                    <p>Click on a map track or a graph node for details.</p>
-                </div>
-                
-                </aside>
-        </div>
-
-        <main id="dashboard">
-            <div id="map"></div>
-            
-            <div id="bottom-widgets">
-                <div id="force-graph-container">
-                    </div>
-                <div id="timeline-chart-container">
-                    <h3>Total Cargo Over Time</h3>
-                </div>
-            </div>
-        </main>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14"/><path class="brand-cross" d="M16 5v22M5 16h22"/><path class="brand-needle" d="M16 7l3 9-3 9-3-9z"/></svg>
+      <div>
+        <h1>Oceanus Fleet Watch</h1>
+        <p class="brand-sub">VAST Challenge 2024 · MC2 · Feb–Nov 2035</p>
+      </div>
     </div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="script.js?v=49"></script> </body>
+    <div class="toolbar" role="toolbar" aria-label="Filters">
+      <div class="field search-field">
+        <label for="search" class="sr-only">Find a company or vessel</label>
+        <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>
+        <input id="search" type="search" list="search-options" placeholder="Company or vessel" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+        <datalist id="search-options"></datalist>
+      </div>
+
+      <div class="segmented" role="radiogroup" aria-label="Companies shown" id="topn">
+        <span class="segmented-label" id="topn-label">Top</span>
+        <button type="button" role="radio" data-value="5" aria-checked="false">5</button>
+        <button type="button" role="radio" data-value="10" aria-checked="true">10</button>
+        <button type="button" role="radio" data-value="20" aria-checked="false">20</button>
+      </div>
+
+      <div class="field date-field">
+        <label for="start-date" class="sr-only">From</label>
+        <input id="start-date" type="date" min="2035-02-01" max="2035-11-30">
+        <span aria-hidden="true">→</span>
+        <label for="end-date" class="sr-only">To</label>
+        <input id="end-date" type="date" min="2035-02-01" max="2035-11-30">
+      </div>
+
+      <button type="button" class="btn-quiet" id="reset">Reset</button>
+    </div>
+  </header>
+
+  <section class="kpis" aria-label="Summary for current selection" id="kpis">
+    <div class="kpi"><span class="kpi-label">Scope</span><span class="kpi-value kpi-scope" id="kpi-scope">All companies</span></div>
+    <div class="kpi"><span class="kpi-label">Vessels tracked</span><span class="kpi-value" id="kpi-vessels">–</span></div>
+    <div class="kpi"><span class="kpi-label">Pings in preserves</span><span class="kpi-value" id="kpi-pings">–</span></div>
+    <div class="kpi"><span class="kpi-label">Hours in preserves</span><span class="kpi-value" id="kpi-hours">–</span></div>
+    <div class="kpi"><span class="kpi-label">Transponder gaps &gt;12 h</span><span class="kpi-value" id="kpi-gaps">–</span></div>
+  </section>
+
+  <main class="board">
+    <section class="panel map-panel" aria-labelledby="map-title">
+      <div class="panel-head">
+        <h2 id="map-title">Chart of Oceanus</h2>
+        <div class="legend" aria-label="Legend">
+          <span><i class="sw sw-sse"></i>SouthSeafood Express</span>
+          <span><i class="sw sw-suspect"></i>Other companies</span>
+          <span><i class="sw sw-gap"></i>Transponder gap</span>
+          <span><i class="sw sw-preserve"></i>Ecological preserve</span>
+        </div>
+      </div>
+      <div class="map-wrap" id="map">
+        <div class="skeleton" aria-hidden="true"></div>
+        <div class="map-readout" id="readout" aria-live="off">— · —</div>
+        <div class="map-zoom">
+          <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+          <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+          <button type="button" id="zoom-fit" aria-label="Fit chart">⤢</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel side-panel" id="suspects" aria-live="polite" tabindex="-1">
+      <div class="side-view" id="side-view"></div>
+    </aside>
+
+    <section class="panel timeline-panel" aria-labelledby="timeline-title">
+      <div class="panel-head">
+        <h2 id="timeline-title">Activity over time</h2>
+        <div class="segmented small" role="radiogroup" aria-label="Timeline metric" id="metric">
+          <button type="button" role="radio" data-value="preserve" aria-checked="true">Hours in preserves</button>
+          <button type="button" role="radio" data-value="cargo" aria-checked="false">Cargo landed</button>
+        </div>
+      </div>
+      <div class="chart" id="timeline"><div class="skeleton" aria-hidden="true"></div></div>
+      <p class="hint">Drag across the chart to filter every view by date.</p>
+    </section>
+
+    <section class="panel flows-panel" aria-labelledby="flows-title">
+      <div class="panel-head">
+        <h2 id="flows-title">Company → preserve</h2>
+        <span class="panel-meta" id="flows-meta"></span>
+      </div>
+      <div class="chart" id="flows"><div class="skeleton" aria-hidden="true"></div></div>
+    </section>
+  </main>
+
+  <div class="error" id="error" hidden>
+    <h2>The fleet data didn't load</h2>
+    <p id="error-msg"></p>
+    <p>Serve the folder over HTTP (for example <code>python -m http.server</code>) and make sure <code>data/oceanus.json</code> exists. Run <code>scripts/build_data.py</code> to create it from <code>mc2.json</code>.</p>
+  </div>
+</div>
+
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="script.js"></script>
+</body>
 </html>
