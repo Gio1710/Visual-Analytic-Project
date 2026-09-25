@@ -91,7 +91,24 @@
     renderMap();
     update({ animate: false });
 
-    const ro = new ResizeObserver(debounce(() => { renderMap(); update({ animate: false }); }, 150));
+    // ResizeObserver also fires once on observe(); only redraw on a real size change.
+    const sizes = new Map();
+    let dirty = false;
+    const redrawSoon = debounce(() => {
+      if (!dirty) return;
+      dirty = false;
+      renderMap();
+      update({ animate: false });
+    }, 150);
+    const ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        const key = `${Math.round(e.contentRect.width)}x${Math.round(e.contentRect.height)}`;
+        const was = sizes.get(e.target);
+        sizes.set(e.target, key);
+        if (was !== undefined && was !== key) dirty = true;
+      }
+      redrawSoon();
+    });
     ro.observe($("#map"));
     ro.observe($("#timeline"));
 
@@ -169,6 +186,7 @@
 
   // ---------- Update pipeline ----------
   function update({ reaggregate = false, animate = true } = {}) {
+    hideTip();
     if (reaggregate) aggregate();
     renderKpis();
     renderTracks();
@@ -412,7 +430,7 @@
 
   function renderMap() {
     const host = $("#map");
-    d3.select(host).select("svg").remove();
+    d3.select(host).select(":scope > svg").remove();
     const w = host.clientWidth;
     const hgt = host.clientHeight;
     if (!w || !hgt) return;
@@ -557,8 +575,17 @@
     map.places.attr("transform", (d) => `translate(${t.apply(map.proj.point(d.lon, d.lat))})`);
     map.areaLabels.attr("transform", (d) => `translate(${t.apply(map.proj.point(d.lon, d.lat))})`);
     map.soundings.attr("transform", (d) => `translate(${t.apply([d.x, d.y])})`);
+    updateScale();
     positionBoats();
     declutter();
+  }
+
+  // Chart scale bar in nautical miles, picked so the bar stays roughly 60–130 px wide.
+  function updateScale() {
+    const pxPerNm = map.proj.pxPerKm * 1.852 * map.t.k;
+    const nm = [1, 2, 5, 10, 20, 50, 100].find((n) => n * pxPerNm >= 60) || 100;
+    $("#scale-bar").style.width = `${Math.round(nm * pxPerNm)}px`;
+    $("#scale-label").textContent = `${nm} nmi`;
   }
 
   // Greedy label placement: higher-priority labels claim space first, overlapping ones hide.
@@ -783,9 +810,11 @@
   }
 
   function zoomBy(k) {
+    if (!map.svg) return;
     map.svg.transition().duration(reduceMotion.matches ? 0 : 220).ease(d3.easeCubicOut).call(map.zoom.scaleBy, k);
   }
   function zoomFit() {
+    if (!map.svg) return;
     map.svg.transition().duration(reduceMotion.matches ? 0 : 260).ease(d3.easeCubicOut).call(map.zoom.transform, d3.zoomIdentity);
   }
 
@@ -823,12 +852,33 @@
       h("h2", { class: `side-title${sse ? " is-sse" : ""}`, text: title }));
   }
 
+  // Pinned summary of the investigation's subject, whatever its rank.
+  function caseCard() {
+    if (SSE_IDX < 0) return null;
+    const [r0, r1] = state.range || [-Infinity, Infinity];
+    let lastPing = null, lastVisit = null;
+    for (const vi of companyVessels[SSE_IDX]) {
+      for (let k = P.off[vi]; k < P.off[vi + 1]; k++) {
+        const t = P.t[k];
+        if (t < r0 || t > r1) continue;
+        lastPing = Math.max(lastPing ?? t, t);
+        if (isPreserve[P.loc[k]]) lastVisit = Math.max(lastVisit ?? t, t);
+      }
+    }
+    const c = stats.comp[SSE_IDX];
+    const rank = stats.ranking.indexOf(SSE_IDX);
+    return h("button", { type: "button", class: "case-card", onclick: () => selectCompany(SSE_IDX) },
+      h("span", { class: "case-eyebrow" }, h("span", { text: "Case subject" }), h("span", { text: rank >= 0 ? `Rank ${rank + 1} of ${stats.ranking.length}` : "Not ranked" })),
+      h("span", { class: "case-name", text: SSE }),
+      h("span", { class: "case-facts" },
+        h("span", {}, h("b", { text: fmtH(c.minutes) }), " in preserves"),
+        h("span", {}, "Last preserve visit ", h("b", { text: lastVisit !== null ? fmtDay(toDate(lastVisit)) : "none" })),
+        h("span", {}, "Last transponder ping ", h("b", { text: lastPing !== null ? fmtDay(toDate(lastPing)) : "none" }))));
+  }
+
   function rankView() {
     const items = stats.ranking.map((ci) => ({ id: ci, name: COMP[ci], value: stats.comp[ci].minutes, label: fmtH(stats.comp[ci].minutes), sse: ci === SSE_IDX }));
-    const body = [];
-    if (SSE_IDX >= 0 && !stats.ranking.includes(SSE_IDX)) {
-      body.push(h("p", { class: "side-note" }, h("strong", { text: SSE }), " logged no dwell time inside preserves in this period. Its tracks stay on the chart in red."));
-    }
+    const body = [caseCard()];
     body.push(items.length ? rankList(items, selectCompany) : h("div", { class: "empty", text: "No preserve activity in this period." }));
     return [
       head({ eyebrow: "By hours inside preserves", meta: `${items.length} companies`, title: "Suspect companies" }),
@@ -1069,7 +1119,8 @@
       const v = stats.zc[ci * nL + li];
       if (v > 0) links.push({ ci, li, v, pings: stats.zcp[ci * nL + li] });
     }));
-    $("#flows-meta").textContent = state.company >= 0 ? "hours inside each preserve"
+    $("#flows-meta").textContent = state.vessel >= 0 ? "company totals · hours"
+      : state.company >= 0 ? "hours inside each preserve"
       : `top ${state.topN}${SSE_IDX >= 0 && !stats.ranking.slice(0, state.topN).includes(SSE_IDX) ? " + SouthSeafood" : ""} · hours`;
     if (!links.length) {
       host.append(h("div", { class: "empty", text: "No preserve activity for this selection and period." }));

@@ -1,6 +1,6 @@
 """Compact the VAST 2024 MC2 knowledge graph into the small file the dashboard loads.
 
-Usage: python scripts/build_data.py path/to/mc2.json path/to/Oceanus\\ Geography.geojson
+Usage: python v2-redesign/scripts/build_data.py path/to/mc2.json path/to/Oceanus\\ Geography.geojson
 """
 import json
 import shutil

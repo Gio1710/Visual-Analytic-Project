@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VAST Challenge MC2 - Oceanus Analysis</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css?v=48"> </head>
+<body>
+    
+    <div id="tooltip" class="tooltip" style="opacity:0;"></div>
+
+    <header>
+        <div class="logo-container">
+            <img src="Fisheye VAST Challenge 2024.png" alt="Fisheye Logo">
+        </div> 
+        <h1>VAST Challenge 2024: Oceanus Fleet Analysis</h1>
+    </header>
+
+    <div class="container">
+        <div id="controls-container">
+            <div id="controls">
+                <h2>Controls</h2>
+                
+                <label for="company-search">Search Company:</label>
+                <input type="text" id="company-search" placeholder="Type to filter...">
+                
+                <label for="vessel-filter">Filter by company:</label>
+                <select id="vessel-filter">
+                    <option value="all">Show all</option>
+                    </select>
+                
+                <label for="top-n-input">Show Top N Suspects (on 'All'):</label>
+                <input type="number" id="top-n-input" min="3" max="50" value="10" style="width: 100%;">
+                
+                <button id="reset-button">Reset Visualization</button>
+                
+                <hr>
+                <label for="start-date">Start Date:</label>
+                <input type="date" id="start-date">
+                <label for="end-date">End Date:</label>
+                <input type="date" id="end-date">
+                <button id="filter-date-button">Filter by Date</button>
+            </div>
+            
+            <aside id="details">
+                <h2>Selected Details</h2>
+                <div id="info-box">
+                    <p>Click on a map track or a graph node for details.</p>
+                </div>
+                
+                </aside>
+        </div>
+
+        <main id="dashboard">
+            <div id="map"></div>
+            
+            <div id="bottom-widgets">
+                <div id="force-graph-container">
+                    </div>
+                <div id="timeline-chart-container">
+                    <h3>Total Cargo Over Time</h3>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="script.js?v=49"></script> </body>
+</html>

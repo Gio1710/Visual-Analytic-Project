@@ -1,0 +1,6 @@
+# Raw challenge data extracted for v1 (138 MB, rebuilt from Data/*.zip)
+v1-original/mc2.json
+v1-original/Oceanus Information/
+
+__pycache__/
+.DS_Store

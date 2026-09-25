@@ -1,27 +1,75 @@
 # Visual-Analytic-Project
 
-**Oceanus Fleet Watch** — an interactive visual analytics dashboard for the VAST Challenge 2024 (Mini-Challenge 2). It shows which fishing companies spend time inside Oceanus' ecological preserves, and when.
+Interactive visual analytics for the **VAST Challenge 2024, Mini-Challenge 2**: helping FishEye International find illegal fishing in the fictional Oceanus archipelago, with SouthSeafood Express Corp as the main suspect.
 
-## Views
+The repository keeps **two versions** of the project side by side, each with its own report, so the work can be compared before and after the redesign.
 
-- **Chart of Oceanus** — a nautical-chart map drawn with D3 from the Oceanus GeoJSON: islands, fishing grounds, hatched ecological preserves, ports and buoys, plus vessel tracks. Dashed lines mark transponder gaps (more than 12 h between the end of one ping and the next). Scroll or use the buttons to zoom; the corner readout shows the cursor position in degrees and minutes. The sea and islands carry procedural relief in nautical-chart style: depth bands, isobaths (5–150 m), soundings when zoomed in, surf lines and terrain contours. The seabed is generated for context and is not survey data. Boat markers show each vessel's last known position and heading; **Replay** sails the fleet along its pings through the selected period.
-- **Suspect companies** — companies ranked by hours spent inside preserves. Click a company for its vessels, a vessel for its preserve visits, or a preserve for the species recorded there (with illustrations) and who fishes it.
-- **Activity over time** — weekly hours inside preserves (or cargo landed). Drag across it to filter every view by date.
-- **Company → preserve** — flow diagram of hours each company spent in each preserve.
+| | Before: Version 1 | After: Version 2 |
+|---|---|---|
+| Code | [`v1-original/`](v1-original/) | [`v2-redesign/`](v2-redesign/) |
+| Report | [`reports/Report_VAST2024_v1.pdf`](reports/Report_VAST2024_v1.pdf) | [`reports/Report_VAST2024_v2.pdf`](reports/Report_VAST2024_v2.pdf) (English) |
+| Date | November 2025 (original submission) | September 2026 (redesign) |
 
-SouthSeafood Express Corp is always highlighted in red. Keyboard: `/` focuses search, `Esc` goes back.
+## Repository layout
+
+```
+index.html                 landing page linking both versions and both reports
+v1-original/               Version 1 exactly as submitted (index.html, script.js, style.css)
+  setup_data.py            extracts the raw data v1 needs from the challenge zip
+v2-redesign/               Version 2, "Oceanus Fleet Watch"
+  index.html, style.css, script.js
+  data/oceanus.json        3.5 MB analysis file derived from mc2.json
+  data/geography.geojson   Oceanus geography
+  scripts/build_data.py    rebuilds data/oceanus.json from mc2.json
+reports/                   Report_VAST2024_v1.pdf and Report_VAST2024_v2.pdf
+Data/                      original challenge zip (mc2.json, geography, answer sheet)
+```
+
+## What changed from v1 to v2
+
+The redesign started as a visual update, but re-checking the data pipeline showed that v1's suspicion signature was not measuring what it intended. The v2 report (Section 2) documents this in detail.
+
+**Analysis**
+- **v1 used 41% of the pings.** Pings logged at a region (e.g. *Nemo Reef*) or at a "City of X" location were discarded, including every ping located *inside* a preserve.
+- **v1 flagged every remaining ping as suspicious.** `d3.geoContains` reads the GeoJSON's counter-clockwise polygons as "the whole globe except this area", so every buoy tested as inside a preserve. The v1 ranking therefore reflected buoy traffic.
+- **v2 uses all 258,542 pings** and ranks companies by **hours of dwell time inside the three ecological preserves**. Transponder gaps now account for dwell time.
+- **Result:** SouthSeafood ranks 58th of 83 by volume, but shows a distinctive pattern: 4 visits to Ghoti Preserve (235 h, 2 Feb – 15 Mar 2035), then both vessels stop transmitting on 12–14 May 2035.
+
+**Design**
+- A D3 nautical chart replaces Leaflet/OpenStreetMap: procedural bathymetry and island relief, isobaths, soundings, a scale bar in nautical miles and a north arrow. Vessels appear as oriented boat markers, and a **Replay** moves the fleet through time.
+- A header toolbar replaces the left sidebar. Below it are a KPI strip and a ranked suspect list that drills down from company to vessel to individual visits. Preserve pages show illustrated species.
+- A company → preserve flow diagram replaces the force graph, whose nodes all pointed at a single "Forbidden zone".
+- Design tokens drive light and dark themes; the layout works on phones.
+- The data is 3.5 MB instead of 138 MB, so v2 runs straight from the repository and on GitHub Pages.
+
+A Figma file documents the v2 design system: colour variables, text styles and the dashboard in both themes. The site does not need it to run; it serves review, collaboration and presentation.
 
 ## Run locally
 
+Serve the repository root over HTTP and open the landing page:
+
 ```bash
 python -m http.server 8000
-# open http://localhost:8000
+# http://localhost:8000
 ```
 
-## Rebuild the data
+- **Version 2** works immediately: <http://localhost:8000/v2-redesign/>
+- **Version 1** needs its raw data first: run `python v1-original/setup_data.py` (it extracts `mc2.json` and the Oceanus geography from `Data/`; they are git-ignored). Then open <http://localhost:8000/v1-original/>. v1 also references two images that were never committed (`fishes.jpg` and the FishEye logo); it runs without them.
 
-The dashboard loads `data/oceanus.json` (3.5 MB), a compact version of the 138 MB `mc2.json` knowledge graph. To regenerate it, unzip `Data/Mini Challenge 2 (1).zip` and run:
+## Rebuild the v2 data
 
 ```bash
-python scripts/build_data.py "path/to/mc2.json" "path/to/Oceanus Information/Oceanus Geography.geojson"
+python v2-redesign/scripts/build_data.py "path/to/mc2.json" "path/to/Oceanus Information/Oceanus Geography.geojson"
 ```
+
+## Using Version 2
+
+- **Chart of Oceanus:** scroll or use the buttons to zoom, drag to pan. Hover a track or boat to highlight it; click it to open the vessel. Click a preserve or fishing ground to open its page. The seabed relief is generated for context, not survey data.
+- **Suspect companies:** ranked by hours inside preserves. The pinned case card keeps SouthSeafood in view.
+- **Activity over time:** drag to filter every view by date. Switch between hours in preserves and cargo landed.
+- **Company → preserve:** hover a flow to isolate it; click to drill down.
+- **Keyboard:** `/` focuses search, `Esc` goes back.
+
+## Tooling
+
+`.claude/`, `.agents/` and `skills-lock.json` hold the design skills (Emil Kowalski's design-engineering skills) used with Claude Code during the redesign. They are not needed to run either version.

@@ -325,7 +325,7 @@ kbd {
 /* ---------- Map ---------- */
 .map-wrap { position: relative; flex: 1; min-height: 0; background: var(--sea); cursor: grab; }
 .map-wrap:active { cursor: grabbing; }
-.map-wrap svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.map-wrap > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 
 .graticule { fill: none; stroke: var(--sea-grid); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .grat-label { font: 0.62rem var(--font-mono); fill: var(--ink-3); }
@@ -450,6 +450,24 @@ kbd {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+.map-scale {
+  position: absolute; left: 10px; bottom: 40px; z-index: 2;
+  display: flex; align-items: flex-end; gap: 10px;
+  pointer-events: none;
+}
+.north { width: 14px; height: 24px; }
+.north path { fill: var(--ink); }
+.north text { font: 600 7px var(--font-ui); fill: var(--ink); text-anchor: middle; }
+.scale { display: flex; flex-direction: column; gap: 3px; }
+.scale-bar {
+  display: flex; height: 5px;
+  border: 1px solid var(--ink);
+  background: var(--surface);
+}
+.scale-bar i { flex: 1; }
+.scale-bar i:nth-child(odd) { background: var(--ink); }
+.scale span { font: 0.66rem var(--font-mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+
 .map-zoom {
   position: absolute; right: 10px; top: 10px; z-index: 2;
   display: flex; flex-direction: column;
@@ -498,6 +516,30 @@ kbd {
   font: inherit; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase;
   color: var(--accent); cursor: pointer;
 }
+
+.case-card {
+  display: flex; flex-direction: column; gap: 4px;
+  width: calc(100% - 28px);
+  margin: 8px 14px 6px;
+  padding: 10px 12px;
+  text-align: left;
+  background: color-mix(in srgb, var(--sse) 7%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--sse) 35%, var(--line));
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: transform 120ms var(--ease-out), background-color 150ms ease;
+}
+.case-card:active { transform: scale(0.98); }
+@media (hover: hover) and (pointer: fine) {
+  .case-card:hover { background: color-mix(in srgb, var(--sse) 12%, var(--surface)); }
+}
+.case-eyebrow {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--sse);
+}
+.case-name { font: 600 1rem/1.2 var(--font-cond); color: var(--sse); }
+.case-facts { display: flex; flex-direction: column; gap: 1px; font-size: 0.76rem; color: var(--ink-2); }
+.case-facts b { font: 500 0.76rem var(--font-mono); color: var(--ink); font-variant-numeric: tabular-nums; }
 
 .rank { list-style: none; margin: 0; padding: 0; }
 .rank-item {
