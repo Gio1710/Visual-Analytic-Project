@@ -68,12 +68,20 @@
           <span><i class="sw sw-sse"></i>SouthSeafood Express</span>
           <span><i class="sw sw-suspect"></i>Other companies</span>
           <span><i class="sw sw-gap"></i>Transponder gap</span>
+          <span><svg class="sw-boat" viewBox="-5 -11 10 22" aria-hidden="true"><path d="M0,-10C2.6,-7 3.6,-3.5 3.6,1L3.6,8.2Q3.6,9.5 2.3,9.5L-2.3,9.5Q-3.6,9.5 -3.6,8.2L-3.6,1C-3.6,-3.5 -2.6,-7 0,-10Z"/></svg>Last known position</span>
           <span><i class="sw sw-preserve"></i>Ecological preserve</span>
         </div>
       </div>
       <div class="map-wrap" id="map">
         <div class="skeleton" aria-hidden="true"></div>
         <div class="map-readout" id="readout" aria-live="off">— · —</div>
+        <div class="map-replay">
+          <span class="replay-time" id="replay-time" aria-live="off"></span>
+          <button type="button" id="replay" aria-pressed="false">
+            <svg viewBox="0 0 12 12" aria-hidden="true"><path class="i-play" d="M3 1.8v8.4L10 6z"/><path class="i-stop" d="M2.5 2.5h7v7h-7z"/></svg>
+            <span id="replay-label">Replay</span>
+          </button>
+        </div>
         <div class="map-zoom">
           <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
           <button type="button" id="zoom-out" aria-label="Zoom out">−</button>

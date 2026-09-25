@@ -4,8 +4,8 @@
 
 ## Views
 
-- **Chart of Oceanus** — a nautical-chart map drawn with D3 from the Oceanus GeoJSON: islands, fishing grounds, hatched ecological preserves, ports and buoys, plus vessel tracks. Dashed lines mark transponder gaps (more than 12 h between the end of one ping and the next). Scroll or use the buttons to zoom; the corner readout shows the cursor position in degrees and minutes.
-- **Suspect companies** — companies ranked by hours spent inside preserves. Click a company for its vessels, a vessel for its preserve visits, or a preserve for the species recorded there and who fishes it.
+- **Chart of Oceanus** — a nautical-chart map drawn with D3 from the Oceanus GeoJSON: islands, fishing grounds, hatched ecological preserves, ports and buoys, plus vessel tracks. Dashed lines mark transponder gaps (more than 12 h between the end of one ping and the next). Scroll or use the buttons to zoom; the corner readout shows the cursor position in degrees and minutes. The sea and islands carry procedural relief in nautical-chart style: depth bands, isobaths (5–150 m), soundings when zoomed in, surf lines and terrain contours. The seabed is generated for context and is not survey data. Boat markers show each vessel's last known position and heading; **Replay** sails the fleet along its pings through the selected period.
+- **Suspect companies** — companies ranked by hours spent inside preserves. Click a company for its vessels, a vessel for its preserve visits, or a preserve for the species recorded there (with illustrations) and who fishes it.
 - **Activity over time** — weekly hours inside preserves (or cargo landed). Drag across it to filter every view by date.
 - **Company → preserve** — flow diagram of hours each company spent in each preserve.
 

@@ -7,9 +7,14 @@
   --ink-3: #7a8a97;
   --line: #d3dcdc;
   --line-strong: #b9c6c8;
-  --sea: #dbe7ea;
+  --sea: #e7f0f1;
+  --sea-shallow: #b6d2dc;
+  --isobath: #93b8c6;
+  --surf: #f7fbfb;
   --sea-grid: #c6d7dc;
-  --land: #e9e1c8;
+  --land: #ebe3c9;
+  --land-high: #cdbf92;
+  --contour-land: #b5a473;
   --land-edge: #b8aa82;
   --fishing: #cfe2d8;
   --fishing-edge: #86ad98;
@@ -42,9 +47,9 @@
     --ink-3: #6a8090;
     --line: #1c2f3d;
     --line-strong: #2a4152;
-    --sea: #0b1822;
+    --sea: #08131b; --sea-shallow: #10303c; --isobath: #1f4656; --surf: #1d3f4c;
     --sea-grid: #152634;
-    --land: #1f2b29;
+    --land: #1f2b29; --land-high: #34463b; --contour-land: #4a5d4f;
     --land-edge: #3c4d45;
     --fishing: #122b25;
     --fishing-edge: #2d5a4a;
@@ -67,9 +72,9 @@
   --ink-3: #6a8090;
   --line: #1c2f3d;
   --line-strong: #2a4152;
-  --sea: #0b1822;
+  --sea: #08131b; --sea-shallow: #10303c; --isobath: #1f4656; --surf: #1d3f4c;
   --sea-grid: #152634;
-  --land: #1f2b29;
+  --land: #1f2b29; --land-high: #34463b; --contour-land: #4a5d4f;
   --land-edge: #3c4d45;
   --fishing: #122b25;
   --fishing-edge: #2d5a4a;
@@ -327,7 +332,80 @@ kbd {
 
 .region { vector-effect: non-scaling-stroke; stroke-width: 1; cursor: pointer; transition: fill-opacity 150ms ease; }
 .region.island { fill: var(--land); stroke: var(--land-edge); }
-.region.fishing { fill: var(--fishing); stroke: var(--fishing-edge); stroke-dasharray: 4 3; }
+.region.fishing { fill: var(--fishing); fill-opacity: 0.45; stroke: var(--fishing-edge); stroke-dasharray: 4 3; }
+
+/* Relief: bathymetry bands, isobaths, surf line, island terrain */
+.relief, .terrain { pointer-events: none; }
+.depth-band { stroke: none; }
+.isobath { fill: none; stroke: var(--isobath); stroke-width: 0.7; stroke-opacity: 0.8; vector-effect: non-scaling-stroke; }
+.isobath.major { stroke-width: 1; }
+.surf { fill: none; stroke: var(--surf); stroke-width: 6; stroke-linejoin: round; stroke-opacity: 0.9; vector-effect: non-scaling-stroke; pointer-events: none; }
+.land-band { stroke: none; }
+.land-line { fill: none; stroke: var(--contour-land); stroke-width: 0.6; stroke-opacity: 0.8; vector-effect: non-scaling-stroke; }
+.map-label.sounding {
+  font: italic 400 0.6rem var(--font-chart);
+  fill: var(--ink-3);
+  stroke: none;
+  pointer-events: none;
+}
+
+/* Vessels */
+.boat { cursor: pointer; transition: opacity 180ms ease; }
+.boat .hull { stroke: var(--surface); stroke-width: 1; }
+.boat .cabin { fill: var(--surface); opacity: 0.8; pointer-events: none; }
+.boat.is-dim { opacity: 0.25; }
+@media (hover: hover) and (pointer: fine) {
+  .boat:hover .hull { stroke: var(--ink); }
+}
+.tracks.is-replaying .track { opacity: 0.18; }
+.tracks.is-replaying .track.gap { opacity: 0; }
+
+.sw-boat { width: 8px; height: 16px; fill: var(--suspect); stroke: var(--surface); stroke-width: 1; }
+
+.map-replay {
+  position: absolute; right: 10px; bottom: 10px; z-index: 2;
+  display: flex; align-items: center; gap: 8px;
+}
+.map-replay button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 12px 0 10px;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--surface); color: var(--ink);
+  font-size: 0.78rem; font-weight: 500;
+  cursor: pointer;
+  transition: transform 120ms var(--ease-out), background-color 150ms ease;
+}
+.map-replay button:active { transform: scale(0.97); }
+.map-replay svg { width: 12px; height: 12px; fill: var(--accent); }
+.map-replay .i-stop, .map-replay [aria-pressed="true"] .i-play { display: none; }
+.map-replay [aria-pressed="true"] .i-stop { display: inline; }
+@media (hover: hover) and (pointer: fine) {
+  .map-replay button:hover { background: var(--surface-2); }
+}
+.replay-time {
+  font: 0.72rem var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 7px;
+}
+.replay-time:empty { display: none; }
+
+.species {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 6px; padding: 2px 14px 8px;
+}
+.species-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px 6px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  font-size: 0.78rem;
+}
+.species-item svg { width: 64px; height: 32px; flex: none; }
 .region.preserve { fill: url(#hatch); stroke: var(--sse); stroke-width: 1.4; }
 .region.other { fill: var(--land); stroke: var(--land-edge); }
 .region.is-selected { stroke-width: 2.5; }
