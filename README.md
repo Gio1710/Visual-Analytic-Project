@@ -4,8 +4,21 @@ Interactive visual analytics for the **VAST Challenge 2024, Mini-Challenge 2**: 
 
 The repository keeps **two versions** of the project side by side, each with its own report, so the work can be compared before and after the redesign.
 
+## Live sites
+
+| | Link |
+|---|---|
+| **Version 2 – Oceanus Fleet Watch** | **<https://gio1710.github.io/Visual-Analytic-Project/v2-redesign/>** |
+| **Version 1 – original dashboard** | **<https://dashboardvastchallenge.netlify.app/>** (original deployment on Netlify) |
+| Landing page with both versions and reports | <https://gio1710.github.io/Visual-Analytic-Project/> |
+
+Version 1 cannot run on GitHub Pages because it loads the 138 MB `mc2.json`, which is too large for the repository; its online copy is the original Netlify deployment. Version 2 ships a 3.5 MB data file and runs directly from GitHub Pages.
+
+## Versions
+
 | | Before: Version 1 | After: Version 2 |
 |---|---|---|
+| Live | [Netlify](https://dashboardvastchallenge.netlify.app/) | [GitHub Pages](https://gio1710.github.io/Visual-Analytic-Project/v2-redesign/) |
 | Code | [`v1-original/`](v1-original/) | [`v2-redesign/`](v2-redesign/) |
 | Report | [`reports/Report_VAST2024_v1.pdf`](reports/Report_VAST2024_v1.pdf) | [`reports/Report_VAST2024_v2.pdf`](reports/Report_VAST2024_v2.pdf) (English) |
 | Date | November 2025 (original submission) | September 2026 (redesign) |
